@@ -1,0 +1,423 @@
+import { MetricDefinition } from "@/types";
+
+export const METRIC_CATALOG: MetricDefinition[] = [
+  // ==========================================
+  // 1. MEDIA DELIVERY
+  // ==========================================
+  {
+    id: "spend",
+    displayName: "Spend",
+    platform: "cross_platform",
+    category: "Media Delivery",
+    dataType: "currency",
+    isDerived: false,
+    sourceField: "spend",
+    description: "Total cost accrued across paid advertising campaigns.",
+    supportedDimensions: ["date", "platform", "campaign", "adset", "ad"],
+  },
+  {
+    id: "impressions",
+    displayName: "Impressions",
+    platform: "cross_platform",
+    category: "Media Delivery",
+    dataType: "integer",
+    isDerived: false,
+    sourceField: "impressions",
+    description: "Number of times ad creatives or content pieces were displayed on user screens.",
+    supportedDimensions: ["date", "platform", "campaign", "adset", "ad", "country", "device"],
+  },
+  {
+    id: "reach",
+    displayName: "Reach",
+    platform: "cross_platform",
+    category: "Media Delivery",
+    dataType: "integer",
+    isDerived: false,
+    sourceField: "reach",
+    description: "Total number of unique user accounts that viewed your ad or content.",
+    supportedDimensions: ["date", "platform", "campaign", "adset", "ad"],
+  },
+  {
+    id: "frequency",
+    displayName: "Frequency",
+    platform: "meta",
+    category: "Media Delivery",
+    dataType: "ratio",
+    isDerived: true,
+    formula: "impressions / NULLIF(reach, 0)",
+    description: "Average number of times each unique user viewed your ad (Impressions / Reach).",
+    supportedDimensions: ["date", "platform", "campaign", "adset"],
+  },
+  {
+    id: "cpm",
+    displayName: "CPM (Cost Per 1,000 Impressions)",
+    platform: "cross_platform",
+    category: "Media Delivery",
+    dataType: "currency",
+    isDerived: true,
+    formula: "(spend / NULLIF(impressions, 0)) * 1000",
+    description: "Average cost incurred per 1,000 impressions delivered.",
+    supportedDimensions: ["date", "platform", "campaign", "adset", "ad"],
+  },
+
+  // ==========================================
+  // 2. TRAFFIC
+  // ==========================================
+  {
+    id: "clicks",
+    displayName: "Clicks (All)",
+    platform: "cross_platform",
+    category: "Traffic",
+    dataType: "integer",
+    isDerived: false,
+    sourceField: "clicks",
+    description: "Total user clicks on any part of the ad or post component.",
+    supportedDimensions: ["date", "platform", "campaign", "adset", "ad"],
+  },
+  {
+    id: "link_clicks",
+    displayName: "Link Clicks",
+    platform: "meta",
+    category: "Traffic",
+    dataType: "integer",
+    isDerived: false,
+    sourceField: "linkClicks",
+    description: "Clicks on destination links within ads or social media bio/posts.",
+    supportedDimensions: ["date", "platform", "campaign", "adset", "ad"],
+  },
+  {
+    id: "ctr",
+    displayName: "Click-Through Rate (CTR %)",
+    platform: "cross_platform",
+    category: "Traffic",
+    dataType: "percentage",
+    isDerived: true,
+    formula: "(clicks / NULLIF(impressions, 0)) * 100",
+    description: "Percentage of impressions that resulted in a user click.",
+    supportedDimensions: ["date", "platform", "campaign", "adset", "ad"],
+  },
+  {
+    id: "cpc",
+    displayName: "Cost Per Click (CPC)",
+    platform: "cross_platform",
+    category: "Traffic",
+    dataType: "currency",
+    isDerived: true,
+    formula: "spend / NULLIF(clicks, 0)",
+    description: "Average cost paid for each individual user click.",
+    supportedDimensions: ["date", "platform", "campaign", "adset", "ad"],
+  },
+  {
+    id: "landing_page_views",
+    displayName: "Landing Page Views",
+    platform: "meta",
+    category: "Traffic",
+    dataType: "integer",
+    isDerived: false,
+    sourceField: "landingPageViews",
+    description: "Number of times a user clicked an ad link and successfully loaded the landing page.",
+    supportedDimensions: ["date", "platform", "campaign", "adset"],
+  },
+
+  // ==========================================
+  // 3. VIDEO
+  // ==========================================
+  {
+    id: "video_views",
+    displayName: "Video Views",
+    platform: "cross_platform",
+    category: "Video",
+    dataType: "integer",
+    isDerived: false,
+    sourceField: "videoViews",
+    description: "Total video plays recorded on paid or organic videos.",
+    supportedDimensions: ["date", "platform", "campaign", "adset", "ad"],
+  },
+  {
+    id: "video_3s_views",
+    displayName: "3-Second Video Views",
+    platform: "meta",
+    category: "Video",
+    dataType: "integer",
+    isDerived: false,
+    sourceField: "video3sViews",
+    description: "Number of times a video was played for 3 seconds or longer.",
+    supportedDimensions: ["date", "platform", "campaign", "adset"],
+  },
+  {
+    id: "thruplays",
+    displayName: "ThruPlays",
+    platform: "meta",
+    category: "Video",
+    dataType: "integer",
+    isDerived: false,
+    sourceField: "thruplays",
+    description: "Number of times a video was played to completion, or for at least 15 seconds.",
+    supportedDimensions: ["date", "platform", "campaign", "adset"],
+  },
+  {
+    id: "video_completions",
+    displayName: "Video Completions (100%)",
+    platform: "cross_platform",
+    category: "Video",
+    dataType: "integer",
+    isDerived: false,
+    sourceField: "videoCompletions",
+    description: "Number of times a video was watched from start to end.",
+    supportedDimensions: ["date", "platform", "campaign", "adset"],
+  },
+  {
+    id: "video_completion_rate",
+    displayName: "Video Completion Rate (%)",
+    platform: "cross_platform",
+    category: "Video",
+    dataType: "percentage",
+    isDerived: true,
+    formula: "(video_completions / NULLIF(video_views, 0)) * 100",
+    description: "Percentage of total video starts that watched until completion.",
+    supportedDimensions: ["date", "platform", "campaign"],
+  },
+  {
+    id: "video_avg_watch_time",
+    displayName: "Average Watch Time",
+    platform: "cross_platform",
+    category: "Video",
+    dataType: "duration_seconds",
+    isDerived: false,
+    sourceField: "videoAvgWatchTime",
+    description: "Average duration in seconds users spent watching the video asset.",
+    supportedDimensions: ["date", "platform", "campaign", "adset"],
+  },
+
+  // ==========================================
+  // 4. ENGAGEMENT
+  // ==========================================
+  {
+    id: "likes",
+    displayName: "Likes & Reactions",
+    platform: "cross_platform",
+    category: "Engagement",
+    dataType: "integer",
+    isDerived: false,
+    sourceField: "likes",
+    description: "Count of post likes, heart reactions, or sentiment endorsements.",
+    supportedDimensions: ["date", "platform", "campaign", "adset", "ad"],
+  },
+  {
+    id: "comments",
+    displayName: "Comments",
+    platform: "cross_platform",
+    category: "Engagement",
+    dataType: "integer",
+    isDerived: false,
+    sourceField: "comments",
+    description: "Number of public user comments posted on content.",
+    supportedDimensions: ["date", "platform", "campaign", "adset", "ad"],
+  },
+  {
+    id: "shares",
+    displayName: "Shares",
+    platform: "cross_platform",
+    category: "Engagement",
+    dataType: "integer",
+    isDerived: false,
+    sourceField: "shares",
+    description: "Number of times content was reshared or re-posted by users.",
+    supportedDimensions: ["date", "platform", "campaign", "adset", "ad"],
+  },
+  {
+    id: "saves",
+    displayName: "Saves",
+    platform: "instagram",
+    category: "Engagement",
+    dataType: "integer",
+    isDerived: false,
+    sourceField: "saves",
+    description: "Number of times Instagram users bookmarked or saved the post/Reel.",
+    supportedDimensions: ["date", "platform"],
+  },
+  {
+    id: "post_engagements",
+    displayName: "Total Post Engagements",
+    platform: "cross_platform",
+    category: "Engagement",
+    dataType: "integer",
+    isDerived: false,
+    sourceField: "postEngagements",
+    description: "Combined count of likes, comments, shares, and saves across posts.",
+    supportedDimensions: ["date", "platform", "campaign", "adset", "ad"],
+  },
+  {
+    id: "engagement_rate",
+    displayName: "Engagement Rate (%)",
+    platform: "cross_platform",
+    category: "Engagement",
+    dataType: "percentage",
+    isDerived: true,
+    formula: "(post_engagements / NULLIF(reach, 0)) * 100",
+    description: "Percentage of reached user accounts that interacted with content.",
+    supportedDimensions: ["date", "platform"],
+  },
+
+  // ==========================================
+  // 5. SOCIAL AUDIENCE (ORGANIC)
+  // ==========================================
+  {
+    id: "total_followers",
+    displayName: "Total Followers",
+    platform: "instagram",
+    category: "Social Audience",
+    dataType: "integer",
+    isDerived: false,
+    sourceField: "totalFollowers",
+    description: "Current follower count for social media account.",
+    supportedDimensions: ["date", "platform"],
+  },
+  {
+    id: "followers_gained",
+    displayName: "New Followers Gained",
+    platform: "instagram",
+    category: "Social Audience",
+    dataType: "integer",
+    isDerived: false,
+    sourceField: "followersGained",
+    description: "Number of new accounts that followed the profile within the period.",
+    supportedDimensions: ["date", "platform"],
+  },
+  {
+    id: "net_follower_growth",
+    displayName: "Net Follower Growth",
+    platform: "instagram",
+    category: "Social Audience",
+    dataType: "integer",
+    isDerived: true,
+    formula: "followersGained - followersLost",
+    description: "Net change in total followers (Gained minus Lost).",
+    supportedDimensions: ["date", "platform"],
+  },
+  {
+    id: "profile_visits",
+    displayName: "Profile Visits",
+    platform: "instagram",
+    category: "Social Audience",
+    dataType: "integer",
+    isDerived: false,
+    sourceField: "profileVisits",
+    description: "Number of user visits to the main account profile page.",
+    supportedDimensions: ["date", "platform"],
+  },
+
+  // ==========================================
+  // 6. CONTENT PERFORMANCE (ORGANIC)
+  // ==========================================
+  {
+    id: "reel_views",
+    displayName: "Reel Views (Plays)",
+    platform: "instagram",
+    category: "Content",
+    dataType: "integer",
+    isDerived: false,
+    sourceField: "reelViews",
+    description: "Total plays on Instagram Reels content.",
+    supportedDimensions: ["date", "platform"],
+  },
+  {
+    id: "story_views",
+    displayName: "Story Views",
+    platform: "instagram",
+    category: "Content",
+    dataType: "integer",
+    isDerived: false,
+    sourceField: "storyViews",
+    description: "Total views on Instagram Story slides.",
+    supportedDimensions: ["date", "platform"],
+  },
+
+  // ==========================================
+  // 7. CONVERSION
+  // ==========================================
+  {
+    id: "conversions",
+    displayName: "Total Conversions",
+    platform: "cross_platform",
+    category: "Conversion",
+    dataType: "integer",
+    isDerived: false,
+    sourceField: "conversions",
+    description: "Aggregate count of platform-defined conversion events.",
+    supportedDimensions: ["date", "platform", "campaign", "adset", "ad"],
+  },
+  {
+    id: "leads",
+    displayName: "Leads",
+    platform: "cross_platform",
+    category: "Conversion",
+    dataType: "integer",
+    isDerived: false,
+    sourceField: "leads",
+    description: "Number of form submissions, lead captures, or signups.",
+    supportedDimensions: ["date", "platform", "campaign", "adset", "ad"],
+  },
+  {
+    id: "purchases",
+    displayName: "Purchases",
+    platform: "cross_platform",
+    category: "Conversion",
+    dataType: "integer",
+    isDerived: false,
+    sourceField: "purchases",
+    description: "Count of completed sales or e-commerce purchase transactions.",
+    supportedDimensions: ["date", "platform", "campaign", "adset", "ad"],
+  },
+  {
+    id: "cpa",
+    displayName: "Cost Per Acquisition (CPA)",
+    platform: "cross_platform",
+    category: "Conversion",
+    dataType: "currency",
+    isDerived: true,
+    formula: "spend / NULLIF(conversions, 0)",
+    description: "Average cost spent per completed conversion action.",
+    supportedDimensions: ["date", "platform", "campaign", "adset", "ad"],
+  },
+
+  // ==========================================
+  // 8. VALUE (OPTIONAL / NON-MANDATORY)
+  // ==========================================
+  {
+    id: "conversion_value",
+    displayName: "Conversion Value (Revenue)",
+    platform: "cross_platform",
+    category: "Value",
+    dataType: "currency",
+    isDerived: false,
+    sourceField: "conversionValue",
+    description: "Total monetary value generated from tracked conversions.",
+    supportedDimensions: ["date", "platform", "campaign", "adset", "ad"],
+  },
+  {
+    id: "roas",
+    displayName: "Return On Ad Spend (ROAS)",
+    platform: "cross_platform",
+    category: "Value",
+    dataType: "ratio",
+    isDerived: true,
+    formula: "conversionValue / NULLIF(spend, 0)",
+    description: "Revenue earned for every $1.00 spent on advertising.",
+    supportedDimensions: ["date", "platform", "campaign", "adset", "ad"],
+  },
+];
+
+export function getMetricById(id: string): MetricDefinition | undefined {
+  return METRIC_CATALOG.find((m) => m.id === id);
+}
+
+export function getMetricsByCategory(category: string): MetricDefinition[] {
+  return METRIC_CATALOG.filter((m) => m.category === category);
+}
+
+export function getMetricsByPlatform(platform: string): MetricDefinition[] {
+  return METRIC_CATALOG.filter(
+    (m) => m.platform === "cross_platform" || m.platform === platform
+  );
+}

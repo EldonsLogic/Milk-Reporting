@@ -1,0 +1,387 @@
+"use client";
+
+import React, { useState } from "react";
+import RGL, { Layout, WidthProvider } from "react-grid-layout";
+import {
+  Dashboard,
+  WidgetConfig,
+  RawDailyRecord,
+  DateRangePreset,
+  WidgetType,
+  DashboardPage,
+} from "@/types";
+import { WidgetRenderer } from "@/components/widgets/WidgetRenderer";
+import { WidgetConfigDrawer } from "@/components/dashboard/WidgetConfigDrawer";
+import {
+  Plus,
+  Edit3,
+  Check,
+  Copy,
+  Save,
+  Calendar,
+  Layers,
+  Sparkles,
+  Printer,
+} from "lucide-react";
+
+// Wrap ReactGridLayout with WidthProvider for responsive column calculation
+const ReactGridLayout = WidthProvider(RGL);
+
+interface Props {
+  dashboard: Dashboard;
+  records: RawDailyRecord[];
+  onSaveDashboard: (updatedDashboard: Dashboard) => void;
+  onDuplicateDashboard: (dashboard: Dashboard) => void;
+  userRole?: "agency_admin" | "client_viewer";
+}
+
+export function DashboardBuilder({
+  dashboard,
+  records,
+  onSaveDashboard,
+  onDuplicateDashboard,
+  userRole = "agency_admin",
+}: Props) {
+  const [currentDashboard, setCurrentDashboard] = useState<Dashboard>(dashboard);
+  const [activePageIndex, setActivePageIndex] = useState<number>(0);
+  const [isEditMode, setIsEditMode] = useState<boolean>(false);
+  const [globalDateRange, setGlobalDateRange] = useState<DateRangePreset>(
+    dashboard.globalDateRange || "last_30_days"
+  );
+  const [editingWidget, setEditingWidget] = useState<WidgetConfig | null>(null);
+  const [isAddModalOpen, setIsAddModalOpen] = useState<boolean>(false);
+
+  const activePage: DashboardPage =
+    currentDashboard.pages[activePageIndex] || currentDashboard.pages[0];
+
+  // Convert Widget configs to react-grid-layout Layout array
+  const layout: Layout[] = activePage.widgets.map((w) => ({
+    i: w.id,
+    x: w.grid.x,
+    y: w.grid.y,
+    w: w.grid.w,
+    h: w.grid.h,
+    minW: 2,
+    minH: 2,
+  }));
+
+  // Handle grid layout drag/resize changes
+  const handleLayoutChange = (newLayout: Layout[]) => {
+    if (!isEditMode) return;
+
+    const updatedWidgets = activePage.widgets.map((w) => {
+      const match = newLayout.find((l) => l.i === w.id);
+      if (match) {
+        return {
+          ...w,
+          grid: {
+            x: match.x,
+            y: match.y,
+            w: match.w,
+            h: match.h,
+          },
+        };
+      }
+      return w;
+    });
+
+    updateActivePageWidgets(updatedWidgets);
+  };
+
+  const updateActivePageWidgets = (widgets: WidgetConfig[]) => {
+    const updatedPages = [...currentDashboard.pages];
+    updatedPages[activePageIndex] = {
+      ...activePage,
+      widgets,
+    };
+
+    const updatedDash = {
+      ...currentDashboard,
+      pages: updatedPages,
+      updatedAt: new Date().toISOString(),
+    };
+
+    setCurrentDashboard(updatedDash);
+  };
+
+  const handleAddWidget = (type: WidgetType) => {
+    const newWidget: WidgetConfig = {
+      id: `w-${Date.now()}`,
+      pageId: activePage.id,
+      widgetType: type,
+      title: `New ${type.toUpperCase().replace("_", " ")}`,
+      grid: {
+        x: (activePage.widgets.length * 3) % 12,
+        y: Infinity, // Placed at bottom automatically
+        w: type === "kpi_card" ? 3 : type === "line_chart" || type === "area_chart" ? 6 : 4,
+        h: type === "kpi_card" ? 3 : 4,
+      },
+      dataConfig: {
+        platform: "all",
+        metricIds: type === "kpi_card" ? ["reach"] : ["reach", "impressions"],
+      },
+    };
+
+    updateActivePageWidgets([...activePage.widgets, newWidget]);
+    setIsAddModalOpen(false);
+    setEditingWidget(newWidget);
+  };
+
+  const handleDeleteWidget = (widgetId: string) => {
+    const filtered = activePage.widgets.filter((w) => w.id !== widgetId);
+    updateActivePageWidgets(filtered);
+  };
+
+  const handleSaveWidgetConfig = (updatedWidget: WidgetConfig) => {
+    const updated = activePage.widgets.map((w) =>
+      w.id === updatedWidget.id ? updatedWidget : w
+    );
+    updateActivePageWidgets(updated);
+  };
+
+  const handleAddPage = () => {
+    const newPageTitle = prompt("Enter new dashboard page title:", "New Section");
+    if (!newPageTitle) return;
+
+    const newPage: DashboardPage = {
+      id: `p-${Date.now()}`,
+      dashboardId: currentDashboard.id,
+      title: newPageTitle,
+      sortOrder: currentDashboard.pages.length,
+      widgets: [],
+    };
+
+    const updatedDash = {
+      ...currentDashboard,
+      pages: [...currentDashboard.pages, newPage],
+    };
+    setCurrentDashboard(updatedDash);
+    setActivePageIndex(currentDashboard.pages.length);
+  };
+
+  return (
+    <div className="flex flex-col min-h-screen bg-milk-bg">
+      {/* Top Builder Control Bar */}
+      <div className="bg-white border-b border-black px-6 py-3 flex flex-wrap items-center justify-between gap-4 sticky top-0 z-30 shadow-xs">
+        <div className="flex items-center space-x-4">
+          <div>
+            <h1 className="text-xl font-display font-black tracking-tight text-black flex items-center gap-2">
+              {currentDashboard.title}
+            </h1>
+            <p className="text-xs font-mono text-neutral-500">
+              Client Dashboard • {activePage.widgets.length} Widgets
+            </p>
+          </div>
+
+          {/* Dashboard Page Tabs */}
+          <div className="flex items-center space-x-1 border-l border-neutral-200 pl-4">
+            {currentDashboard.pages.map((page, idx) => (
+              <button
+                key={page.id}
+                onClick={() => setActivePageIndex(idx)}
+                className={`px-3 py-1 text-xs font-mono font-bold transition-all border ${
+                  activePageIndex === idx
+                    ? "bg-milk-yellow text-black border-black shadow-crisp-sm"
+                    : "bg-white text-neutral-600 border-neutral-300 hover:border-black"
+                }`}
+              >
+                {page.title}
+              </button>
+            ))}
+            {isEditMode && (
+              <button
+                onClick={handleAddPage}
+                className="px-2 py-1 text-xs font-mono bg-neutral-100 hover:bg-neutral-200 border border-neutral-300 font-bold"
+                title="Add Page Tab"
+              >
+                + Tab
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Global Toolbar Actions */}
+        <div className="flex items-center space-x-3 text-xs font-mono">
+          {/* Global Date Range Selector */}
+          <div className="flex items-center space-x-1 bg-white border border-black px-2 py-1">
+            <Calendar className="w-3.5 h-3.5 text-neutral-700" />
+            <select
+              value={globalDateRange}
+              onChange={(e) => setGlobalDateRange(e.target.value as DateRangePreset)}
+              className="bg-transparent focus:outline-none font-bold text-black cursor-pointer"
+            >
+              <option value="last_7_days">Last 7 Days</option>
+              <option value="last_14_days">Last 14 Days</option>
+              <option value="last_30_days">Last 30 Days</option>
+              <option value="last_90_days">Last 90 Days</option>
+              <option value="this_month">This Month</option>
+              <option value="previous_month">Previous Month</option>
+            </select>
+          </div>
+
+          {/* Export PDF Report */}
+          <button
+            onClick={() => window.print()}
+            className="px-3 py-1.5 font-bold bg-white text-black border border-black hover:bg-neutral-100 flex items-center space-x-1"
+            title="Export / Print Report PDF"
+          >
+            <Printer className="w-3.5 h-3.5" />
+            <span>Export PDF</span>
+          </button>
+
+          {/* Agency Admin Only Controls */}
+          {userRole === "agency_admin" && (
+            <>
+              {/* Edit Mode Toggle */}
+              <button
+                onClick={() => setIsEditMode(!isEditMode)}
+                className={`px-3 py-1.5 font-bold flex items-center space-x-1.5 border transition-all ${
+                  isEditMode
+                    ? "bg-black text-white border-black"
+                    : "bg-white text-black border-black hover:bg-milk-subtle"
+                }`}
+              >
+                {isEditMode ? (
+                  <>
+                    <Check className="w-3.5 h-3.5 text-milk-yellow" />
+                    <span>Exit Edit Mode</span>
+                  </>
+                ) : (
+                  <>
+                    <Edit3 className="w-3.5 h-3.5 text-black" />
+                    <span>Edit Dashboard</span>
+                  </>
+                )}
+              </button>
+
+              {/* Add Widget (Active only in Edit Mode) */}
+              {isEditMode && (
+                <button
+                  onClick={() => setIsAddModalOpen(true)}
+                  className="px-3 py-1.5 font-bold bg-milk-yellow text-black border border-black hover:bg-milk-yellowHover flex items-center space-x-1 shadow-crisp-sm"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Add Widget</span>
+                </button>
+              )}
+
+              {/* Duplicate Dashboard */}
+              <button
+                onClick={() => onDuplicateDashboard(currentDashboard)}
+                className="px-2.5 py-1.5 font-bold bg-white text-neutral-700 border border-neutral-300 hover:border-black flex items-center space-x-1"
+                title="Duplicate Dashboard"
+              >
+                <Copy className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Duplicate</span>
+              </button>
+
+              {/* Save Dashboard Layout */}
+              <button
+                onClick={() => onSaveDashboard(currentDashboard)}
+                className="px-3 py-1.5 font-bold bg-black text-milk-yellow border border-black hover:bg-neutral-900 flex items-center space-x-1 shadow-crisp-sm"
+              >
+                <Save className="w-3.5 h-3.5" />
+                <span>Save</span>
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* Main Grid Canvas */}
+      <div className="flex-1 p-6">
+        {activePage.widgets.length === 0 ? (
+          <div className="border-2 dashed border-neutral-300 p-12 text-center my-12 max-w-lg mx-auto bg-white">
+            <Layers className="w-10 h-10 text-neutral-400 mx-auto mb-3" />
+            <h3 className="text-sm font-mono font-bold uppercase text-black">Empty Dashboard Section</h3>
+            <p className="text-xs font-sans text-neutral-500 mt-1 mb-4">
+              Click &quot;Edit Dashboard&quot; and add widgets to customize this client layout.
+            </p>
+            <button
+              onClick={() => {
+                setIsEditMode(true);
+                setIsAddModalOpen(true);
+              }}
+              className="px-4 py-2 bg-milk-yellow text-black border border-black font-mono text-xs font-bold shadow-crisp-sm"
+            >
+              + Add First Widget
+            </button>
+          </div>
+        ) : (
+          <ReactGridLayout
+            className="layout"
+            layout={layout}
+            cols={12}
+            rowHeight={60}
+            isDraggable={isEditMode}
+            isResizable={isEditMode}
+            onLayoutChange={handleLayoutChange}
+            margin={[16, 16]}
+          >
+            {activePage.widgets.map((widget) => (
+              <div key={widget.id}>
+                <WidgetRenderer
+                  widget={widget}
+                  records={records}
+                  globalDateRange={globalDateRange}
+                  isEditMode={isEditMode}
+                  onEdit={(w) => setEditingWidget(w)}
+                  onDelete={(id) => handleDeleteWidget(id)}
+                />
+              </div>
+            ))}
+          </ReactGridLayout>
+        )}
+      </div>
+
+      {/* Widget Configuration Modal Drawer */}
+      {editingWidget && (
+        <WidgetConfigDrawer
+          widget={editingWidget}
+          isOpen={!!editingWidget}
+          onClose={() => setEditingWidget(null)}
+          onSave={handleSaveWidgetConfig}
+        />
+      )}
+
+      {/* Add Widget Picker Modal */}
+      {isAddModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-xs p-4">
+          <div className="bg-white border-2 border-black max-w-lg w-full p-6 shadow-2xl">
+            <h3 className="text-lg font-display font-extrabold uppercase text-black mb-1">Add Widget</h3>
+            <p className="text-xs font-mono text-neutral-500 mb-4">Choose a visualization card to place on grid</p>
+            <div className="grid grid-cols-2 gap-2 text-xs font-mono mb-6">
+              {[
+                { type: "kpi_card", label: "KPI Card", desc: "Single big metric readout with delta" },
+                { type: "line_chart", label: "Line Chart", desc: "Time-series trend line" },
+                { type: "area_chart", label: "Area Chart", desc: "Shaded volume metric trend" },
+                { type: "bar_chart", label: "Bar Chart", desc: "Comparative bar visualizer" },
+                { type: "donut_chart", label: "Donut Share", desc: "Proportional metric breakdown" },
+                { type: "table", label: "Data Table", desc: "Structured performance table" },
+                { type: "ai_insight", label: "AI Diagnostic", desc: "Fact -> Interpretation card" },
+                { type: "text", label: "Text / Notes", desc: "Custom client annotation block" },
+              ].map((item) => (
+                <button
+                  key={item.type}
+                  onClick={() => handleAddWidget(item.type as WidgetType)}
+                  className="p-3 border border-neutral-200 hover:border-black hover:bg-milk-yellow text-left transition-all group"
+                >
+                  <div className="font-bold text-black group-hover:underline">{item.label}</div>
+                  <div className="text-[10px] text-neutral-500 font-sans mt-0.5">{item.desc}</div>
+                </button>
+              ))}
+            </div>
+            <div className="flex justify-end">
+              <button
+                onClick={() => setIsAddModalOpen(false)}
+                className="px-4 py-1.5 border border-black font-mono text-xs font-bold hover:bg-neutral-100"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
