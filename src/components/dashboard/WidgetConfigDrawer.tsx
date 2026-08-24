@@ -22,6 +22,8 @@ const WIDGET_TYPES: { type: WidgetType; label: string }[] = [
   { type: "bar_chart", label: "Bar Chart" },
   { type: "donut_chart", label: "Donut Share Chart" },
   { type: "table", label: "Data Table" },
+  { type: "campaign_table", label: "Campaign Table" },
+  { type: "content_table", label: "Content Post Grid" },
   { type: "ai_insight", label: "AI Diagnostic Insight" },
   { type: "text", label: "Text / Client Notes" },
 ];
