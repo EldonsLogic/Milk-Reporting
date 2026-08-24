@@ -114,31 +114,31 @@ export function AgencyShell() {
   };
 
   return (
-    <div className="min-h-screen bg-milk-bg flex flex-col">
+    <div className="min-h-screen bg-milk-bg flex flex-col overflow-x-hidden">
       {/* Editorial Header */}
       <header className="bg-black text-white border-b border-neutral-800 px-6 py-3 flex flex-wrap items-center justify-between gap-4">
         {/* Brand & Client Selector */}
-        <div className="flex items-center space-x-6">
+        <div className="flex flex-wrap items-center gap-3 sm:gap-6">
           <div className="flex items-center space-x-3">
             <img
               src="/milk-logo.png"
               alt="milk logo"
               className="h-8 w-auto border border-neutral-800"
             />
-            <span className="font-mono text-xs uppercase tracking-widest text-neutral-300 font-semibold border-l border-neutral-800 pl-3">
+            <span className="hidden sm:inline font-mono text-xs uppercase tracking-widest text-neutral-300 font-semibold border-l border-neutral-800 pl-3">
               Reporting Platform
             </span>
           </div>
 
           {/* Client Selector Dropdown */}
-          <div className="relative">
+          <div className="relative max-w-[220px] sm:max-w-xs">
             <select
               value={selectedClient.id}
               onChange={(e) => {
                 const found = MOCK_CLIENTS.find((c) => c.id === e.target.value);
                 if (found) setSelectedClient(found);
               }}
-              className="bg-neutral-900 text-white font-mono text-xs font-bold border border-neutral-700 px-3 py-1.5 focus:outline-none focus:border-milk-yellow cursor-pointer"
+              className="w-full max-w-full truncate bg-neutral-900 text-white font-mono text-xs font-bold border border-neutral-700 px-3 py-1.5 focus:outline-none focus:border-milk-yellow cursor-pointer"
             >
               {MOCK_CLIENTS.map((c) => (
                 <option key={c.id} value={c.id}>

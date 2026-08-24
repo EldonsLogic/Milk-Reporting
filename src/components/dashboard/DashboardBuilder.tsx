@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
-import RGL, { Layout, WidthProvider } from "react-grid-layout";
+import { Layout, Responsive, WidthProvider } from "react-grid-layout";
 import {
   Dashboard,
   WidgetConfig,
@@ -24,8 +24,11 @@ import {
   Printer,
 } from "lucide-react";
 
-// Wrap ReactGridLayout with WidthProvider for responsive column calculation
-const ReactGridLayout = WidthProvider(RGL);
+// Responsive grid: reflows columns per breakpoint (12 on desktop down to a
+// single column on phones) instead of always rendering 12 fixed columns.
+const ReactGridLayout = WidthProvider(Responsive);
+const GRID_BREAKPOINTS = { lg: 1024, md: 768, sm: 640, xs: 0 };
+const GRID_COLS = { lg: 12, md: 8, sm: 4, xs: 1 };
 
 interface Props {
   dashboard: Dashboard;
@@ -50,6 +53,7 @@ export function DashboardBuilder({
   );
   const [editingWidget, setEditingWidget] = useState<WidgetConfig | null>(null);
   const [isAddModalOpen, setIsAddModalOpen] = useState<boolean>(false);
+  const [activeBreakpoint, setActiveBreakpoint] = useState<string>("lg");
 
   const activePage: DashboardPage =
     currentDashboard.pages[activePageIndex] || currentDashboard.pages[0];
@@ -65,9 +69,13 @@ export function DashboardBuilder({
     minH: 2,
   }));
 
-  // Handle grid layout drag/resize changes
+  // Handle grid layout drag/resize changes. Widgets store a single GridPos
+  // (not one per breakpoint), so it's the source of truth for the "lg"
+  // (desktop) layout only - smaller breakpoints are RGL's auto-reflowed
+  // preview and shouldn't be written back, or resizing on a phone would
+  // overwrite the real desktop positions.
   const handleLayoutChange = (newLayout: Layout[]) => {
-    if (!isEditMode) return;
+    if (!isEditMode || activeBreakpoint !== "lg") return;
 
     const updatedWidgets = activePage.widgets.map((w) => {
       const match = newLayout.find((l) => l.i === w.id);
@@ -310,12 +318,14 @@ export function DashboardBuilder({
         ) : (
           <ReactGridLayout
             className="layout"
-            layout={layout}
-            cols={12}
+            layouts={{ lg: layout, md: layout, sm: layout, xs: layout }}
+            breakpoints={GRID_BREAKPOINTS}
+            cols={GRID_COLS}
             rowHeight={60}
             isDraggable={isEditMode}
             isResizable={isEditMode}
             onLayoutChange={handleLayoutChange}
+            onBreakpointChange={setActiveBreakpoint}
             margin={[16, 16]}
             draggableCancel=".no-drag"
           >

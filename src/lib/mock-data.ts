@@ -112,7 +112,7 @@ export const MOCK_CLIENTS: Client[] = [
 // Helper to generate historical daily records over 90 days
 export function generateMockRecords(clientId: string): RawDailyRecord[] {
   const records: RawDailyRecord[] = [];
-  const today = new Date("2026-08-17");
+  const today = new Date();
   const client = MOCK_CLIENTS.find((c) => c.id === clientId) || MOCK_CLIENTS[0];
 
   for (let i = 89; i >= 0; i--) {

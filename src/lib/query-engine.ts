@@ -19,7 +19,7 @@ export interface AggregatedQueryResult {
 }
 
 export function getDateBounds(preset: DateRangePreset): { startDate: Date; endDate: Date } {
-  const endDate = new Date("2026-08-17");
+  const endDate = new Date();
   const startDate = new Date(endDate);
 
   switch (preset) {
