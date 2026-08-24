@@ -317,6 +317,7 @@ export function DashboardBuilder({
             isResizable={isEditMode}
             onLayoutChange={handleLayoutChange}
             margin={[16, 16]}
+            draggableCancel=".no-drag"
           >
             {activePage.widgets.map((widget) => (
               <div key={widget.id}>

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { MOCK_CLIENTS, generateMockRecords, MOCK_TEMPLATES } from "@/lib/mock-data";
 import { Client, Dashboard } from "@/types";
 import { DashboardBuilder } from "@/components/dashboard/DashboardBuilder";
@@ -14,6 +14,8 @@ import {
   Eye,
   Shield,
 } from "lucide-react";
+
+const DASHBOARDS_STORAGE_KEY = "milk-reporting:dashboards";
 
 export function AgencyShell() {
   const [selectedClient, setSelectedClient] = useState<Client>(MOCK_CLIENTS[0]);
@@ -52,6 +54,21 @@ export function AgencyShell() {
     },
   });
 
+  // Dashboards are seeded above (SSR-safe defaults); after mount, layer in
+  // whatever was last saved to localStorage so edits survive a reload. This
+  // is Phase 1 persistence - swap for real Supabase reads once that's live.
+  useEffect(() => {
+    const raw = window.localStorage.getItem(DASHBOARDS_STORAGE_KEY);
+    if (!raw) return;
+    try {
+      const saved = JSON.parse(raw) as Record<string, Dashboard>;
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- hydrating from a browser-only store (localStorage) after mount
+      setDashboards((prev) => ({ ...prev, ...saved }));
+    } catch {
+      // corrupt/old storage shape - ignore and keep defaults
+    }
+  }, []);
+
   const activeDashboard = dashboards[selectedClient.id] || {
     id: `dash-${selectedClient.id}`,
     clientId: selectedClient.id,
@@ -68,8 +85,13 @@ export function AgencyShell() {
 
   const currentRecords = generateMockRecords(selectedClient.id);
 
+  const persistDashboards = (updated: Record<string, Dashboard>) => {
+    setDashboards(updated);
+    window.localStorage.setItem(DASHBOARDS_STORAGE_KEY, JSON.stringify(updated));
+  };
+
   const handleSaveDashboard = (updatedDashboard: Dashboard) => {
-    setDashboards({
+    persistDashboards({
       ...dashboards,
       [selectedClient.id]: updatedDashboard,
     });
@@ -84,7 +106,7 @@ export function AgencyShell() {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
-    setDashboards({
+    persistDashboards({
       ...dashboards,
       [selectedClient.id]: duplicated,
     });
@@ -211,6 +233,12 @@ export function AgencyShell() {
       <main className="flex-1">
         {activeTab === "dashboards" && (
           <DashboardBuilder
+            // DashboardBuilder copies this prop into local state once on
+            // mount and never re-syncs it - force a remount whenever the
+            // active dashboard's identity or content actually changes
+            // (client switch, or a save/hydration replacing the object),
+            // otherwise the builder keeps showing stale title/widgets.
+            key={`${activeDashboard.id}-${activeDashboard.updatedAt}`}
             dashboard={activeDashboard}
             records={currentRecords}
             onSaveDashboard={handleSaveDashboard}

@@ -46,7 +46,10 @@ export function WidgetRenderer({
     <div className="h-full w-full bg-white border border-neutral-200 flex flex-col justify-between p-4 transition-all hover:border-neutral-400 group relative">
       {/* Edit Mode Header Overlay Actions */}
       {isEditMode && (
-        <div className="absolute top-2 right-2 z-20 flex items-center space-x-1 bg-milk-bg border border-neutral-300 p-1 opacity-90 group-hover:opacity-100">
+        <div
+          className="no-drag absolute top-2 right-2 z-20 flex items-center space-x-1 bg-milk-bg border border-neutral-300 p-1 opacity-90 group-hover:opacity-100"
+          onMouseDown={(e) => e.stopPropagation()}
+        >
           <button
             onClick={() => onEdit?.(widget)}
             className="px-2 py-0.5 text-xs font-mono bg-white border border-neutral-300 hover:bg-milk-yellow hover:border-black font-semibold"
