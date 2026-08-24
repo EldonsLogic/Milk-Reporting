@@ -1,4 +1,5 @@
 import { MetricDefinition } from "@/types";
+import { loadCustomMetrics } from "./custom-metrics";
 
 export const METRIC_CATALOG: MetricDefinition[] = [
   // ==========================================
@@ -646,16 +647,27 @@ export const METRIC_CATALOG: MetricDefinition[] = [
   },
 ];
 
+// Custom (agency-defined) metrics are merged in wherever the catalog is
+// read from, so they show up in the same picker/browser as built-in
+// metrics without every call site needing to know they exist separately.
+function getEffectiveCatalog(): MetricDefinition[] {
+  return [...METRIC_CATALOG, ...loadCustomMetrics()];
+}
+
 export function getMetricById(id: string): MetricDefinition | undefined {
-  return METRIC_CATALOG.find((m) => m.id === id);
+  return getEffectiveCatalog().find((m) => m.id === id);
 }
 
 export function getMetricsByCategory(category: string): MetricDefinition[] {
-  return METRIC_CATALOG.filter((m) => m.category === category);
+  return getEffectiveCatalog().filter((m) => m.category === category);
 }
 
 export function getMetricsByPlatform(platform: string): MetricDefinition[] {
-  return METRIC_CATALOG.filter(
+  return getEffectiveCatalog().filter(
     (m) => m.platform === "cross_platform" || m.platform === platform
   );
+}
+
+export function getAllMetrics(): MetricDefinition[] {
+  return getEffectiveCatalog();
 }

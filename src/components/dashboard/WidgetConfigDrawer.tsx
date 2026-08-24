@@ -2,7 +2,7 @@
 
 import React, { useState } from "react";
 import { WidgetConfig, WidgetType, Platform, DateRangePreset } from "@/types";
-import { METRIC_CATALOG } from "@/lib/metric-catalog";
+import { getAllMetrics } from "@/lib/metric-catalog";
 import { X, Check } from "lucide-react";
 
 interface Props {
@@ -29,6 +29,10 @@ const WIDGET_TYPES: { type: WidgetType; label: string }[] = [
 ];
 
 export function WidgetConfigDrawer({ widget, isOpen, onClose, onSave }: Props) {
+  // Lazy init is safe here: this drawer only ever mounts after a user
+  // interaction (never during SSR), so it picks up any custom metric
+  // created since the app loaded each time it's opened.
+  const [availableMetrics] = useState(() => getAllMetrics());
   const [title, setTitle] = useState(widget.title);
   const [widgetType, setWidgetType] = useState<WidgetType>(widget.widgetType);
   const [platform, setPlatform] = useState<Platform | "all">(widget.dataConfig.platform);
@@ -132,7 +136,7 @@ export function WidgetConfigDrawer({ widget, isOpen, onClose, onSave }: Props) {
             <div>
               <label className="block font-bold uppercase text-neutral-800 mb-1">Select Metric(s) from Catalog</label>
               <div className="max-h-48 overflow-y-auto border border-neutral-200 p-2 space-y-1 bg-neutral-50">
-                {METRIC_CATALOG.map((m) => {
+                {availableMetrics.map((m) => {
                   const isSelected = selectedMetrics.includes(m.id);
                   return (
                     <div

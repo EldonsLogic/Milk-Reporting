@@ -6,6 +6,7 @@ import {
   ContentPost,
 } from "@/types";
 import { getMetricById } from "./metric-catalog";
+import { evaluateFormula } from "./formula-evaluator";
 
 export interface AggregatedQueryResult {
   metricId: string;
@@ -163,6 +164,23 @@ function averageField(records: RawDailyRecord[], field: keyof RawDailyRecord): n
   return sum / present.length;
 }
 
+// Sums every numeric field on the records using their exact RawDailyRecord
+// property names (spend, impressions, followersGained, ...) - the same
+// vocabulary the built-in derived metric formulas already use. This is
+// what lets a custom metric's formula reference any field without the
+// query engine needing a dedicated case for it.
+function sumAllNumericFields(records: RawDailyRecord[]): Record<string, number> {
+  const totals: Record<string, number> = {};
+  for (const r of records) {
+    for (const [key, value] of Object.entries(r)) {
+      if (typeof value === "number") {
+        totals[key] = (totals[key] || 0) + value;
+      }
+    }
+  }
+  return totals;
+}
+
 function calculateMetricValue(records: RawDailyRecord[], metricId: string): number {
   if (records.length === 0) return 0;
 
@@ -284,8 +302,22 @@ function calculateMetricValue(records: RawDailyRecord[], metricId: string): numb
       return sumStoryViews > 0 ? (sumStoryExits / sumStoryViews) * 100 : 0;
     case "posts_published":
       return records.reduce((acc, r) => acc + (r.postsPublished || 0), 0);
-    default:
+    default: {
+      // Not a built-in metric - check whether it's an agency-defined
+      // custom metric and, if so, evaluate its formula against every
+      // summed numeric field (not just the handful this function names
+      // explicitly), so a custom formula can reference any field.
+      const customMetric = getMetricById(metricId);
+      if (customMetric?.isDerived && customMetric.formula) {
+        try {
+          const result = evaluateFormula(customMetric.formula, sumAllNumericFields(records));
+          return result ?? 0;
+        } catch {
+          return 0;
+        }
+      }
       return 0;
+    }
   }
 }
 
