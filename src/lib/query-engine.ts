@@ -133,6 +133,16 @@ export function queryWidgetData(
   });
 }
 
+// Fields that are rates/scores, not counts - averaging across the records
+// where the field was actually reported, never summed (summing a quality
+// score across 30 days would produce nonsense like "210").
+function averageField(records: RawDailyRecord[], field: keyof RawDailyRecord): number {
+  const present = records.filter((r) => typeof r[field] === "number") as (RawDailyRecord & Record<string, number>)[];
+  if (present.length === 0) return 0;
+  const sum = present.reduce((acc, r) => acc + (r[field] as number), 0);
+  return sum / present.length;
+}
+
 function calculateMetricValue(records: RawDailyRecord[], metricId: string): number {
   if (records.length === 0) return 0;
 
@@ -147,6 +157,15 @@ function calculateMetricValue(records: RawDailyRecord[], metricId: string): numb
   const sumValue = records.reduce((acc, r) => acc + r.conversionValue, 0);
   const sumFollowersGained = records.reduce((acc, r) => acc + (r.followersGained || 0), 0);
   const sumFollowersLost = records.reduce((acc, r) => acc + (r.followersLost || 0), 0);
+  const sumOutboundClicks = records.reduce((acc, r) => acc + (r.outboundClicks || 0), 0);
+  const sumUniqueClicks = records.reduce((acc, r) => acc + (r.uniqueClicks || 0), 0);
+  const sumVideo3sViews = records.reduce((acc, r) => acc + r.video3sViews, 0);
+  const sumThruplays = records.reduce((acc, r) => acc + r.thruplays, 0);
+  const sumNegativeFeedback = records.reduce((acc, r) => acc + (r.negativeFeedback || 0), 0);
+  const sumComments = records.reduce((acc, r) => acc + r.comments, 0);
+  const sumCommentsResponded = records.reduce((acc, r) => acc + (r.commentsResponded || 0), 0);
+  const sumStoryViews = records.reduce((acc, r) => acc + (r.storyViews || 0), 0);
+  const sumStoryExits = records.reduce((acc, r) => acc + (r.storyExits || 0), 0);
 
   switch (metricId) {
     case "spend":
@@ -205,6 +224,46 @@ function calculateMetricValue(records: RawDailyRecord[], metricId: string): numb
       return sumValue;
     case "roas":
       return sumSpend > 0 ? sumValue / sumSpend : 0;
+    case "view_through_conversions":
+      return records.reduce((acc, r) => acc + (r.viewThroughConversions || 0), 0);
+    case "outbound_clicks":
+      return sumOutboundClicks;
+    case "outbound_ctr":
+      return sumImpressions > 0 ? (sumOutboundClicks / sumImpressions) * 100 : 0;
+    case "unique_clicks":
+      return sumUniqueClicks;
+    case "unique_ctr":
+      return sumReach > 0 ? (sumUniqueClicks / sumReach) * 100 : 0;
+    case "search_impression_share":
+      return averageField(records, "searchImpressionShare");
+    case "quality_score":
+      return averageField(records, "qualityScore");
+    case "cost_per_thruplay":
+      return sumThruplays > 0 ? sumSpend / sumThruplays : 0;
+    case "hook_rate":
+      return sumImpressions > 0 ? (sumVideo3sViews / sumImpressions) * 100 : 0;
+    case "hold_rate":
+      return sumVideo3sViews > 0 ? (sumThruplays / sumVideo3sViews) * 100 : 0;
+    case "video_views_2s":
+      return records.reduce((acc, r) => acc + (r.videoViews2s || 0), 0);
+    case "video_views_6s":
+      return records.reduce((acc, r) => acc + (r.videoViews6s || 0), 0);
+    case "negative_feedback":
+      return sumNegativeFeedback;
+    case "negative_feedback_rate":
+      return sumImpressions > 0 ? (sumNegativeFeedback / sumImpressions) * 100 : 0;
+    case "comments_responded":
+      return sumCommentsResponded;
+    case "response_rate":
+      return sumComments > 0 ? (sumCommentsResponded / sumComments) * 100 : 0;
+    case "avg_response_time":
+      return averageField(records, "avgResponseTimeMinutes");
+    case "story_exits":
+      return sumStoryExits;
+    case "story_exit_rate":
+      return sumStoryViews > 0 ? (sumStoryExits / sumStoryViews) * 100 : 0;
+    case "posts_published":
+      return records.reduce((acc, r) => acc + (r.postsPublished || 0), 0);
     default:
       return 0;
   }

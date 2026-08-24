@@ -197,6 +197,8 @@ export interface RawDailyRecord {
   clicks: number;
   linkClicks: number;
   landingPageViews: number;
+  outboundClicks?: number;
+  uniqueClicks?: number;
 
   // Video
   videoViews: number;
@@ -204,6 +206,8 @@ export interface RawDailyRecord {
   thruplays: number;
   videoCompletions: number;
   videoAvgWatchTime: number;
+  videoViews2s?: number; // TikTok
+  videoViews6s?: number; // TikTok
 
   // Engagement
   postEngagements: number;
@@ -211,6 +215,7 @@ export interface RawDailyRecord {
   comments: number;
   shares: number;
   saves: number;
+  negativeFeedback?: number; // Meta: hides/reports/unlikes
 
   // Social Audience (Organic)
   totalFollowers?: number;
@@ -220,13 +225,24 @@ export interface RawDailyRecord {
   accountsReached?: number;
   accountsEngaged?: number;
 
+  // Community management (organic)
+  commentsResponded?: number;
+  avgResponseTimeMinutes?: number; // averaged, not summed, when aggregating
+  postsPublished?: number;
+
   // Content (Organic)
   reelViews?: number;
   storyViews?: number;
+  storyExits?: number;
+
+  // Google Ads diagnostics (averaged, not summed, when aggregating)
+  searchImpressionShare?: number; // percentage 0-100
+  qualityScore?: number; // 1-10
 
   // Conversion & Value
   conversions: number;
   leads: number;
   purchases: number;
   conversionValue: number;
+  viewThroughConversions?: number;
 }
