@@ -6,6 +6,7 @@ import {
   Dashboard,
   WidgetConfig,
   RawDailyRecord,
+  ContentPost,
   DateRangePreset,
   WidgetType,
   DashboardPage,
@@ -33,6 +34,7 @@ const GRID_COLS = { lg: 12, md: 8, sm: 4, xs: 1 };
 interface Props {
   dashboard: Dashboard;
   records: RawDailyRecord[];
+  contentPosts?: ContentPost[];
   onSaveDashboard: (updatedDashboard: Dashboard) => void;
   onDuplicateDashboard: (dashboard: Dashboard) => void;
   userRole?: "agency_admin" | "client_viewer";
@@ -41,6 +43,7 @@ interface Props {
 export function DashboardBuilder({
   dashboard,
   records,
+  contentPosts = [],
   onSaveDashboard,
   onDuplicateDashboard,
   userRole = "agency_admin",
@@ -121,8 +124,8 @@ export function DashboardBuilder({
       grid: {
         x: (activePage.widgets.length * 3) % 12,
         y: Infinity, // Placed at bottom automatically
-        w: type === "kpi_card" ? 3 : type === "line_chart" || type === "area_chart" ? 6 : 4,
-        h: type === "kpi_card" ? 3 : 4,
+        w: type === "kpi_card" ? 3 : type === "content_table" ? 8 : type === "line_chart" || type === "area_chart" ? 6 : 4,
+        h: type === "kpi_card" ? 3 : type === "content_table" ? 6 : 4,
       },
       dataConfig: {
         platform: "all",
@@ -334,6 +337,7 @@ export function DashboardBuilder({
                 <WidgetRenderer
                   widget={widget}
                   records={records}
+                  contentPosts={contentPosts}
                   globalDateRange={globalDateRange}
                   isEditMode={isEditMode}
                   onEdit={(w) => setEditingWidget(w)}
@@ -369,6 +373,7 @@ export function DashboardBuilder({
                 { type: "bar_chart", label: "Bar Chart", desc: "Comparative bar visualizer" },
                 { type: "donut_chart", label: "Donut Share", desc: "Proportional metric breakdown" },
                 { type: "table", label: "Data Table", desc: "Structured performance table" },
+                { type: "content_table", label: "Content Post Grid", desc: "Per-post thumbnails with caption + engagement" },
                 { type: "ai_insight", label: "AI Diagnostic", desc: "Fact -> Interpretation card" },
                 { type: "text", label: "Text / Notes", desc: "Custom client annotation block" },
               ].map((item) => (

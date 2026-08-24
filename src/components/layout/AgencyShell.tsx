@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import { MOCK_CLIENTS, generateMockRecords, MOCK_TEMPLATES } from "@/lib/mock-data";
+import { MOCK_CLIENTS, generateMockRecords, generateMockContentPosts, MOCK_TEMPLATES } from "@/lib/mock-data";
 import { Client, Dashboard } from "@/types";
 import { DashboardBuilder } from "@/components/dashboard/DashboardBuilder";
 import { MetricCatalogBrowser } from "@/components/data-catalog/MetricCatalogBrowser";
@@ -84,6 +84,7 @@ export function AgencyShell() {
   };
 
   const currentRecords = generateMockRecords(selectedClient.id);
+  const currentContentPosts = generateMockContentPosts(selectedClient.id);
 
   const persistDashboards = (updated: Record<string, Dashboard>) => {
     setDashboards(updated);
@@ -241,6 +242,7 @@ export function AgencyShell() {
             key={`${activeDashboard.id}-${activeDashboard.updatedAt}`}
             dashboard={activeDashboard}
             records={currentRecords}
+            contentPosts={currentContentPosts}
             onSaveDashboard={handleSaveDashboard}
             onDuplicateDashboard={handleDuplicateDashboard}
             userRole={userRole}

@@ -1,8 +1,8 @@
 "use client";
 
 import React from "react";
-import { WidgetConfig, RawDailyRecord, DateRangePreset } from "@/types";
-import { queryWidgetData } from "@/lib/query-engine";
+import { WidgetConfig, RawDailyRecord, ContentPost, DateRangePreset } from "@/types";
+import { queryWidgetData, queryContentPosts, formatMetricValue } from "@/lib/query-engine";
 import {
   ResponsiveContainer,
   LineChart,
@@ -19,11 +19,12 @@ import {
   Tooltip,
   CartesianGrid,
 } from "recharts";
-import { ArrowUpRight, ArrowDownRight, Sparkles, AlertCircle } from "lucide-react";
+import { ArrowUpRight, ArrowDownRight, Sparkles, AlertCircle, ImageOff, ExternalLink, Heart, MessageCircle, Share2 } from "lucide-react";
 
 interface Props {
   widget: WidgetConfig;
   records: RawDailyRecord[];
+  contentPosts?: ContentPost[];
   globalDateRange: DateRangePreset;
   onEdit?: (widget: WidgetConfig) => void;
   onDelete?: (widgetId: string) => void;
@@ -35,12 +36,17 @@ const MILK_PALETTE = ["#FFE600", "#111111", "#666666", "#999999", "#CCCCCC"];
 export function WidgetRenderer({
   widget,
   records,
+  contentPosts = [],
   globalDateRange,
   onEdit,
   onDelete,
   isEditMode,
 }: Props) {
   const dataResults = queryWidgetData(records, widget.dataConfig, globalDateRange);
+  const contentResults =
+    widget.widgetType === "content_table"
+      ? queryContentPosts(contentPosts, widget.dataConfig, globalDateRange)
+      : [];
 
   return (
     <div className="h-full w-full bg-white border border-neutral-200 flex flex-col justify-between p-4 transition-all hover:border-neutral-400 group relative">
@@ -80,7 +86,7 @@ export function WidgetRenderer({
 
       {/* Widget Content Body */}
       <div className="flex-1 w-full overflow-hidden flex flex-col justify-center">
-        {renderWidgetBody(widget, dataResults)}
+        {renderWidgetBody(widget, dataResults, contentResults)}
       </div>
 
       {/* Optional Note Footer */}
@@ -95,11 +101,17 @@ export function WidgetRenderer({
 
 function renderWidgetBody(
   widget: WidgetConfig,
-  results: ReturnType<typeof queryWidgetData>
+  results: ReturnType<typeof queryWidgetData>,
+  contentResults: ContentPost[]
 ) {
   const primaryResult = results[0];
 
-  if (!primaryResult && widget.widgetType !== "text" && widget.widgetType !== "ai_insight") {
+  if (
+    !primaryResult &&
+    widget.widgetType !== "text" &&
+    widget.widgetType !== "ai_insight" &&
+    widget.widgetType !== "content_table"
+  ) {
     return (
       <div className="flex items-center justify-center text-xs text-neutral-400 font-mono py-4">
         No Data Configured
@@ -380,6 +392,66 @@ function renderWidgetBody(
       return (
         <div className="h-full p-2 text-xs font-sans text-neutral-700 leading-relaxed overflow-y-auto">
           {widget.displayConfig?.noteText || "Double-click edit to add custom client text notes."}
+        </div>
+      );
+    }
+
+    case "content_table": {
+      if (contentResults.length === 0) {
+        return (
+          <div className="flex flex-col items-center justify-center h-full text-center text-xs font-mono text-neutral-400 py-4 px-2">
+            <ImageOff className="w-6 h-6 mb-2 text-neutral-300" />
+            No organic posts connected for this platform/date range.
+          </div>
+        );
+      }
+
+      return (
+        <div className="h-full overflow-y-auto -mx-1 px-1">
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+            {contentResults.map((post) => (
+              <a
+                key={post.id}
+                href={post.permalinkUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="group border border-neutral-200 hover:border-black bg-white flex flex-col text-left transition-all"
+              >
+                {/* Thumbnail - placeholder until a real platform connection
+                    supplies post.thumbnailUrl (Meta Graph API full_picture) */}
+                <div className="aspect-square w-full bg-neutral-100 flex items-center justify-center relative overflow-hidden">
+                  {post.thumbnailUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={post.thumbnailUrl} alt={post.caption} className="w-full h-full object-cover" />
+                  ) : (
+                    <ImageOff className="w-6 h-6 text-neutral-300" />
+                  )}
+                  <span className="absolute top-1 left-1 bg-black text-white text-[9px] font-mono uppercase px-1.5 py-0.5">
+                    {post.contentType}
+                  </span>
+                  <ExternalLink className="absolute top-1 right-1 w-3.5 h-3.5 text-white drop-shadow opacity-0 group-hover:opacity-100 transition-opacity" />
+                </div>
+
+                <div className="p-1.5 flex-1 flex flex-col gap-1">
+                  <p className="text-[10px] font-sans text-neutral-700 line-clamp-2 leading-tight">{post.caption}</p>
+                  <div className="mt-auto flex items-center gap-2 text-[9px] font-mono text-neutral-500">
+                    <span className="flex items-center gap-0.5">
+                      <Heart className="w-2.5 h-2.5" />
+                      {formatMetricValue(post.metrics.likes || 0, "integer")}
+                    </span>
+                    <span className="flex items-center gap-0.5">
+                      <MessageCircle className="w-2.5 h-2.5" />
+                      {formatMetricValue(post.metrics.comments || 0, "integer")}
+                    </span>
+                    <span className="flex items-center gap-0.5">
+                      <Share2 className="w-2.5 h-2.5" />
+                      {formatMetricValue(post.metrics.shares || 0, "integer")}
+                    </span>
+                  </div>
+                </div>
+              </a>
+            ))}
+          </div>
         </div>
       );
     }

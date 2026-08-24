@@ -173,6 +173,33 @@ export interface ClientUser {
   role: "agency_admin" | "client_viewer";
 }
 
+// One row per individual post/creative, not a daily aggregate - backs the
+// content_table widget (post-level reporting with a thumbnail). thumbnailUrl
+// is undefined until a real platform connection is live (Meta Graph API
+// returns this as `full_picture` on a Page post, or a creative's
+// `thumbnail_url` on an ad) - the widget renders a placeholder until then,
+// so nothing about the widget changes when real ingestion lands.
+export interface ContentPost {
+  id: string;
+  clientId: string;
+  platform: Platform;
+  accountName: string;
+  postedAt: string; // ISO datetime
+  contentType: "image" | "video" | "reel" | "story" | "carousel";
+  caption: string;
+  permalinkUrl?: string;
+  thumbnailUrl?: string;
+  metrics: {
+    reach?: number;
+    impressions?: number;
+    likes?: number;
+    comments?: number;
+    shares?: number;
+    saves?: number;
+    videoViews?: number;
+  };
+}
+
 export interface RawDailyRecord {
   id: string;
   clientId: string;

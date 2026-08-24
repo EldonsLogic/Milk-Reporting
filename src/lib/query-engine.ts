@@ -3,6 +3,7 @@ import {
   DateRangePreset,
   ComparisonPreset,
   WidgetDataConfig,
+  ContentPost,
 } from "@/types";
 import { getMetricById } from "./metric-catalog";
 
@@ -290,6 +291,37 @@ function getRawFieldValue(r: RawDailyRecord, metricId: string): number {
     default:
       return 0;
   }
+}
+
+// Post-level query - deliberately separate from queryWidgetData, which
+// always collapses to one aggregate number per metric. This returns
+// individual rows (one per post), which the aggregate engine has no
+// concept of.
+export function queryContentPosts(
+  posts: ContentPost[],
+  config: WidgetDataConfig,
+  globalDateRange: DateRangePreset = "last_30_days"
+): ContentPost[] {
+  const selectedRange =
+    config.dateRangeMode === "override" && config.customDateRange
+      ? config.customDateRange
+      : globalDateRange;
+  const { startDate, endDate } = getDateBounds(selectedRange);
+
+  const filtered = posts.filter((p) => {
+    if (config.platform !== "all" && p.platform !== config.platform) return false;
+    const postedAt = new Date(p.postedAt);
+    return postedAt >= startDate && postedAt <= endDate;
+  });
+
+  const sortKey = (config.sortBy as keyof ContentPost["metrics"]) || "reach";
+  const sorted = [...filtered].sort((a, b) => {
+    const av = a.metrics[sortKey] ?? 0;
+    const bv = b.metrics[sortKey] ?? 0;
+    return config.sortOrder === "asc" ? av - bv : bv - av;
+  });
+
+  return config.limit ? sorted.slice(0, config.limit) : sorted;
 }
 
 export function formatMetricValue(val: number, dataType: string): string {

@@ -1,4 +1,4 @@
-import { Client, RawDailyRecord, Dashboard, DashboardTemplate } from "@/types";
+import { Client, RawDailyRecord, Dashboard, DashboardTemplate, ContentPost } from "@/types";
 
 export const MOCK_CLIENTS: Client[] = [
   {
@@ -313,6 +313,79 @@ export function generateMockRecords(clientId: string): RawDailyRecord[] {
   }
 
   return records;
+}
+
+interface PostSeed {
+  contentType: ContentPost["contentType"];
+  caption: string;
+  baseReach: number;
+  baseLikes: number;
+}
+
+const AURA_POST_SEEDS: PostSeed[] = [
+  { contentType: "reel", caption: "The 3-step glow routine everyone's asking about ✨", baseReach: 42000, baseLikes: 3100 },
+  { contentType: "carousel", caption: "Swipe to see the before/after after just 2 weeks", baseReach: 21000, baseLikes: 1450 },
+  { contentType: "image", caption: "New shade just dropped. Which one are you grabbing?", baseReach: 15800, baseLikes: 980 },
+  { contentType: "reel", caption: "POV: your skin after switching to Aura", baseReach: 58000, baseLikes: 4600 },
+  { contentType: "story", caption: "Behind the scenes at our photoshoot", baseReach: 9200, baseLikes: 410 },
+  { contentType: "image", caption: "Summer glow, all year round ☀️", baseReach: 13400, baseLikes: 870 },
+];
+
+const LUMINA_POST_SEEDS: PostSeed[] = [
+  { contentType: "reel", caption: "Studio session recap - what a week", baseReach: 8100, baseLikes: 620 },
+  { contentType: "carousel", caption: "5 lighting setups every creator should know", baseReach: 6400, baseLikes: 510 },
+  { contentType: "image", caption: "New workspace, who dis", baseReach: 4200, baseLikes: 290 },
+  { contentType: "story", caption: "Q&A replay from yesterday", baseReach: 2100, baseLikes: 95 },
+  { contentType: "reel", caption: "The editing trick that saved us hours", baseReach: 11200, baseLikes: 940 },
+  { contentType: "image", caption: "Client spotlight: what we shot this month", baseReach: 3800, baseLikes: 240 },
+];
+
+// One row per individual post, not a daily aggregate - only generated for
+// clients with an actual organic platform connected (Instagram/Facebook
+// Page). thumbnailUrl is intentionally left undefined - there's no live
+// Meta connection yet, so the widget renders a placeholder rather than
+// inventing an image URL. Real ingestion populates this field later without
+// any widget changes.
+export function generateMockContentPosts(clientId: string): ContentPost[] {
+  const client = MOCK_CLIENTS.find((c) => c.id === clientId);
+  if (!client) return [];
+
+  const hasInstagram = client.connectedPlatforms.some((p) => p.platform === "instagram");
+  const hasFacebookPage = client.connectedPlatforms.some((p) => p.platform === "facebook_page");
+  if (!hasInstagram && !hasFacebookPage) return [];
+
+  const seeds = client.id === "client-aura-cosmetics" ? AURA_POST_SEEDS : client.id === "client-lumina-studio" ? LUMINA_POST_SEEDS : [];
+  if (seeds.length === 0) return [];
+
+  const accountName = client.connectedPlatforms.find((p) => p.platform === "instagram")?.accountName || client.connectedPlatforms.find((p) => p.platform === "facebook_page")?.accountName || client.name;
+
+  return seeds.map((seed, idx) => {
+    const daysAgo = idx * 5 + 1;
+    const postedAt = new Date();
+    postedAt.setDate(postedAt.getDate() - daysAgo);
+    const reach = Math.round(seed.baseReach * (0.85 + (idx % 3) * 0.1));
+    const likes = Math.round(seed.baseLikes * (0.85 + (idx % 3) * 0.1));
+
+    return {
+      id: `post-${client.id}-${idx}`,
+      clientId: client.id,
+      platform: "instagram" as const,
+      accountName,
+      postedAt: postedAt.toISOString(),
+      contentType: seed.contentType,
+      caption: seed.caption,
+      permalinkUrl: `https://instagram.com/p/mock-${client.id}-${idx}`,
+      metrics: {
+        reach,
+        impressions: Math.round(reach * 1.35),
+        likes,
+        comments: Math.round(likes * 0.06),
+        shares: Math.round(likes * 0.08),
+        saves: Math.round(likes * 0.12),
+        videoViews: seed.contentType === "reel" ? Math.round(reach * 1.8) : undefined,
+      },
+    };
+  });
 }
 
 // Preset Templates
