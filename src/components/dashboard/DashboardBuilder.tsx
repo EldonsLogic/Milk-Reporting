@@ -23,6 +23,7 @@ import {
   Layers,
   Sparkles,
   Printer,
+  Settings,
 } from "lucide-react";
 
 // Responsive grid: reflows columns per breakpoint (12 on desktop down to a
@@ -55,22 +56,28 @@ export function DashboardBuilder({
     dashboard.globalDateRange || "last_30_days"
   );
   const [editingWidget, setEditingWidget] = useState<WidgetConfig | null>(null);
-  const [isAddModalOpen, setIsAddModalOpen] = useState<boolean>(false);
+  // null = Add Widget modal closed; undefined = adding to the ungrouped
+  // area; a string = adding into that section's id
+  const [addWidgetTargetSection, setAddWidgetTargetSection] = useState<string | undefined | null>(null);
   const [activeBreakpoint, setActiveBreakpoint] = useState<string>("lg");
+  const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
+  const [markupInput, setMarkupInput] = useState<string>(String(dashboard.markupPercentage ?? 0));
+
+  // Client perspective is driven by userRole (the same "Client Portal View"
+  // toggle in AgencyShell agency admins use to preview) - markup is only
+  // ever applied here, never for the agency's own admin view.
+  const isClientPerspective = userRole === "client_viewer";
 
   const activePage: DashboardPage =
     currentDashboard.pages[activePageIndex] || currentDashboard.pages[0];
 
-  // Convert Widget configs to react-grid-layout Layout array
-  const layout: Layout[] = activePage.widgets.map((w) => ({
-    i: w.id,
-    x: w.grid.x,
-    y: w.grid.y,
-    w: w.grid.w,
-    h: w.grid.h,
-    minW: 2,
-    minH: 2,
-  }));
+  // Widgets group into an "ungrouped" area plus any agency-defined
+  // sections; a page with no sections behaves exactly as before (one flat
+  // grid, no headers) so existing dashboards/templates are unaffected.
+  const sections = (activePage.sections || []).slice().sort((a, b) => a.sortOrder - b.sortOrder);
+  const ungroupedWidgets = activePage.widgets.filter(
+    (w) => !w.sectionId || !sections.some((s) => s.id === w.sectionId)
+  );
 
   // Handle grid layout drag/resize changes. Widgets store a single GridPos
   // (not one per breakpoint), so it's the source of truth for the "lg"
@@ -116,13 +123,16 @@ export function DashboardBuilder({
   };
 
   const handleAddWidget = (type: WidgetType) => {
+    const sectionId = addWidgetTargetSection ?? undefined;
+    const siblingWidgets = activePage.widgets.filter((w) => w.sectionId === sectionId);
     const newWidget: WidgetConfig = {
       id: `w-${Date.now()}`,
       pageId: activePage.id,
+      sectionId,
       widgetType: type,
       title: `New ${type.toUpperCase().replace("_", " ")}`,
       grid: {
-        x: (activePage.widgets.length * 3) % 12,
+        x: (siblingWidgets.length * 3) % 12,
         y: Infinity, // Placed at bottom automatically
         w: type === "kpi_card" ? 3 : type === "content_table" ? 8 : type === "line_chart" || type === "area_chart" ? 6 : 4,
         h: type === "kpi_card" ? 3 : type === "content_table" ? 6 : 4,
@@ -134,7 +144,7 @@ export function DashboardBuilder({
     };
 
     updateActivePageWidgets([...activePage.widgets, newWidget]);
-    setIsAddModalOpen(false);
+    setAddWidgetTargetSection(null);
     setEditingWidget(newWidget);
   };
 
@@ -168,6 +178,91 @@ export function DashboardBuilder({
     };
     setCurrentDashboard(updatedDash);
     setActivePageIndex(currentDashboard.pages.length);
+  };
+
+  const handleAddSection = () => {
+    const title = prompt("Section title?", "New Section");
+    if (!title) return;
+    const newSection = { id: `sec-${Date.now()}`, title, sortOrder: (activePage.sections || []).length };
+    const updatedPages = [...currentDashboard.pages];
+    updatedPages[activePageIndex] = { ...activePage, sections: [...(activePage.sections || []), newSection] };
+    setCurrentDashboard({ ...currentDashboard, pages: updatedPages, updatedAt: new Date().toISOString() });
+  };
+
+  const handleRenameSection = (sectionId: string) => {
+    const section = (activePage.sections || []).find((s) => s.id === sectionId);
+    if (!section) return;
+    const title = prompt("Rename section:", section.title);
+    if (!title) return;
+    const updatedSections = (activePage.sections || []).map((s) => (s.id === sectionId ? { ...s, title } : s));
+    const updatedPages = [...currentDashboard.pages];
+    updatedPages[activePageIndex] = { ...activePage, sections: updatedSections };
+    setCurrentDashboard({ ...currentDashboard, pages: updatedPages, updatedAt: new Date().toISOString() });
+  };
+
+  const handleDeleteSection = (sectionId: string) => {
+    if (!confirm("Delete this section? Its widgets move to the ungrouped area, not deleted.")) return;
+    const updatedSections = (activePage.sections || []).filter((s) => s.id !== sectionId);
+    const updatedWidgets = activePage.widgets.map((w) => (w.sectionId === sectionId ? { ...w, sectionId: undefined } : w));
+    const updatedPages = [...currentDashboard.pages];
+    updatedPages[activePageIndex] = { ...activePage, sections: updatedSections, widgets: updatedWidgets };
+    setCurrentDashboard({ ...currentDashboard, pages: updatedPages, updatedAt: new Date().toISOString() });
+  };
+
+  const handleSaveMarkup = () => {
+    const parsed = Number(markupInput);
+    const markupPercentage = Number.isFinite(parsed) ? Math.max(0, parsed) : 0;
+    const updatedDash = { ...currentDashboard, markupPercentage, updatedAt: new Date().toISOString() };
+    setCurrentDashboard(updatedDash);
+    onSaveDashboard(updatedDash);
+    setIsSettingsOpen(false);
+  };
+
+  // Renders one grid instance for a subset of the active page's widgets
+  // (either the ungrouped area or a single section) - handleLayoutChange
+  // already only updates widgets present in whatever layout array it's
+  // given, so the same handler is safe to reuse across multiple instances.
+  const renderGrid = (widgets: WidgetConfig[]) => {
+    const gridLayout: Layout[] = widgets.map((w) => ({
+      i: w.id,
+      x: w.grid.x,
+      y: w.grid.y,
+      w: w.grid.w,
+      h: w.grid.h,
+      minW: 2,
+      minH: 2,
+    }));
+
+    return (
+      <ReactGridLayout
+        className="layout"
+        layouts={{ lg: gridLayout, md: gridLayout, sm: gridLayout, xs: gridLayout }}
+        breakpoints={GRID_BREAKPOINTS}
+        cols={GRID_COLS}
+        rowHeight={60}
+        isDraggable={isEditMode}
+        isResizable={isEditMode}
+        onLayoutChange={handleLayoutChange}
+        onBreakpointChange={setActiveBreakpoint}
+        margin={[16, 16]}
+        draggableCancel=".no-drag"
+      >
+        {widgets.map((widget) => (
+          <div key={widget.id}>
+            <WidgetRenderer
+              widget={widget}
+              records={records}
+              contentPosts={contentPosts}
+              globalDateRange={globalDateRange}
+              isEditMode={isEditMode}
+              markupPercentage={isClientPerspective ? currentDashboard.markupPercentage : undefined}
+              onEdit={(w) => setEditingWidget(w)}
+              onDelete={(id) => handleDeleteWidget(id)}
+            />
+          </div>
+        ))}
+      </ReactGridLayout>
+    );
   };
 
   return (
@@ -268,13 +363,26 @@ export function DashboardBuilder({
               {/* Add Widget (Active only in Edit Mode) */}
               {isEditMode && (
                 <button
-                  onClick={() => setIsAddModalOpen(true)}
+                  onClick={() => setAddWidgetTargetSection(undefined)}
                   className="px-3 py-1.5 font-bold bg-milk-yellow text-black border border-black hover:bg-milk-yellowHover flex items-center space-x-1 shadow-crisp-sm"
                 >
                   <Plus className="w-3.5 h-3.5" />
                   <span>Add Widget</span>
                 </button>
               )}
+
+              {/* Dashboard Settings (markup, etc.) */}
+              <button
+                onClick={() => {
+                  setMarkupInput(String(currentDashboard.markupPercentage ?? 0));
+                  setIsSettingsOpen(true);
+                }}
+                className="px-2.5 py-1.5 font-bold bg-white text-neutral-700 border border-neutral-300 hover:border-black flex items-center space-x-1"
+                title="Dashboard Settings"
+              >
+                <Settings className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Settings</span>
+              </button>
 
               {/* Duplicate Dashboard */}
               <button
@@ -301,7 +409,7 @@ export function DashboardBuilder({
 
       {/* Main Grid Canvas */}
       <div className="flex-1 p-6">
-        {activePage.widgets.length === 0 ? (
+        {activePage.widgets.length === 0 && sections.length === 0 ? (
           <div className="border-2 dashed border-neutral-300 p-12 text-center my-12 max-w-lg mx-auto bg-white">
             <Layers className="w-10 h-10 text-neutral-400 mx-auto mb-3" />
             <h3 className="text-sm font-mono font-bold uppercase text-black">Empty Dashboard Section</h3>
@@ -311,7 +419,7 @@ export function DashboardBuilder({
             <button
               onClick={() => {
                 setIsEditMode(true);
-                setIsAddModalOpen(true);
+                setAddWidgetTargetSection(undefined);
               }}
               className="px-4 py-2 bg-milk-yellow text-black border border-black font-mono text-xs font-bold shadow-crisp-sm"
             >
@@ -319,33 +427,59 @@ export function DashboardBuilder({
             </button>
           </div>
         ) : (
-          <ReactGridLayout
-            className="layout"
-            layouts={{ lg: layout, md: layout, sm: layout, xs: layout }}
-            breakpoints={GRID_BREAKPOINTS}
-            cols={GRID_COLS}
-            rowHeight={60}
-            isDraggable={isEditMode}
-            isResizable={isEditMode}
-            onLayoutChange={handleLayoutChange}
-            onBreakpointChange={setActiveBreakpoint}
-            margin={[16, 16]}
-            draggableCancel=".no-drag"
-          >
-            {activePage.widgets.map((widget) => (
-              <div key={widget.id}>
-                <WidgetRenderer
-                  widget={widget}
-                  records={records}
-                  contentPosts={contentPosts}
-                  globalDateRange={globalDateRange}
-                  isEditMode={isEditMode}
-                  onEdit={(w) => setEditingWidget(w)}
-                  onDelete={(id) => handleDeleteWidget(id)}
-                />
-              </div>
-            ))}
-          </ReactGridLayout>
+          <div className="space-y-8">
+            {ungroupedWidgets.length > 0 && renderGrid(ungroupedWidgets)}
+
+            {sections.map((section) => {
+              const sectionWidgets = activePage.widgets.filter((w) => w.sectionId === section.id);
+              return (
+                <div key={section.id}>
+                  <div className="flex items-center justify-between border-b-2 border-black pb-1.5 mb-4">
+                    <h2 className="text-sm font-display font-black uppercase tracking-wide text-black">
+                      {section.title}
+                    </h2>
+                    {isEditMode && (
+                      <div className="flex items-center gap-3 text-xs font-mono">
+                        <button
+                          onClick={() => setAddWidgetTargetSection(section.id)}
+                          className="text-neutral-600 hover:text-black font-bold"
+                        >
+                          + Add Widget
+                        </button>
+                        <button
+                          onClick={() => handleRenameSection(section.id)}
+                          className="text-neutral-600 hover:text-black font-bold"
+                        >
+                          Rename
+                        </button>
+                        <button
+                          onClick={() => handleDeleteSection(section.id)}
+                          className="text-red-600 hover:text-red-800 font-bold"
+                        >
+                          Delete Section
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                  {sectionWidgets.length > 0 ? (
+                    renderGrid(sectionWidgets)
+                  ) : (
+                    <p className="text-xs font-mono text-neutral-400 mb-4">No widgets in this section yet.</p>
+                  )}
+                </div>
+              );
+            })}
+
+            {isEditMode && (
+              <button
+                onClick={handleAddSection}
+                className="px-3 py-1.5 text-xs font-mono font-bold border border-neutral-300 bg-white hover:border-black flex items-center gap-1.5"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                Add Section
+              </button>
+            )}
+          </div>
         )}
       </div>
 
@@ -359,8 +493,50 @@ export function DashboardBuilder({
         />
       )}
 
+      {/* Dashboard Settings Modal (markup) */}
+      {isSettingsOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-xs p-4">
+          <div className="bg-white border-2 border-black max-w-sm w-full p-6 shadow-2xl">
+            <h3 className="text-lg font-display font-extrabold uppercase text-black mb-1">Dashboard Settings</h3>
+            <p className="text-xs font-mono text-neutral-500 mb-4">Applies only to this dashboard.</p>
+
+            <label className="block text-xs font-mono font-bold uppercase text-neutral-800 mb-1">
+              Agency Markup (%)
+            </label>
+            <input
+              type="number"
+              min={0}
+              step={0.5}
+              value={markupInput}
+              onChange={(e) => setMarkupInput(e.target.value)}
+              className="w-full p-2 border border-neutral-300 focus:border-black focus:outline-none bg-milk-bg font-sans text-sm font-semibold mb-1"
+            />
+            <p className="text-[11px] font-sans text-neutral-500 mb-6">
+              Added on top of true spend for the client-facing view only (spend, CPM, CPC, CPA, ROAS, etc.).
+              You always see true spend in your own admin view - use &quot;Client Portal View&quot; in the header
+              to preview exactly what the client sees.
+            </p>
+
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setIsSettingsOpen(false)}
+                className="px-4 py-1.5 border border-black font-mono text-xs font-bold hover:bg-neutral-100"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSaveMarkup}
+                className="px-4 py-1.5 border border-black bg-black text-milk-yellow font-mono text-xs font-bold hover:bg-neutral-900"
+              >
+                Save Settings
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Add Widget Picker Modal */}
-      {isAddModalOpen && (
+      {addWidgetTargetSection !== null && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-xs p-4">
           <div className="bg-white border-2 border-black max-w-lg w-full p-6 shadow-2xl">
             <h3 className="text-lg font-display font-extrabold uppercase text-black mb-1">Add Widget</h3>
@@ -389,7 +565,7 @@ export function DashboardBuilder({
             </div>
             <div className="flex justify-end">
               <button
-                onClick={() => setIsAddModalOpen(false)}
+                onClick={() => setAddWidgetTargetSection(null)}
                 className="px-4 py-1.5 border border-black font-mono text-xs font-bold hover:bg-neutral-100"
               >
                 Cancel

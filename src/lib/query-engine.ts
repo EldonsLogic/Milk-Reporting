@@ -63,10 +63,23 @@ export function getPreviousPeriodBounds(startDate: Date, endDate: Date): { prevS
   return { prevStart, prevEnd };
 }
 
+// Applies the agency's hidden markup to spend before any metric is
+// calculated, so every spend-derived metric (CPM, CPC, CPA, ROAS, cost per
+// ThruPlay...) correctly reflects what the client was billed rather than
+// true platform spend, without special-casing each formula individually.
+// Only ever applied for the client-facing perspective - agency admins see
+// true spend by default.
+function applyMarkup(records: RawDailyRecord[], markupPercentage?: number): RawDailyRecord[] {
+  if (!markupPercentage) return records;
+  const factor = 1 + markupPercentage / 100;
+  return records.map((r) => ({ ...r, spend: r.spend * factor }));
+}
+
 export function queryWidgetData(
   records: RawDailyRecord[],
   config: WidgetDataConfig,
-  globalDateRange: DateRangePreset = "last_30_days"
+  globalDateRange: DateRangePreset = "last_30_days",
+  markupPercentage?: number
 ): AggregatedQueryResult[] {
   const selectedRange =
     config.dateRangeMode === "override" && config.customDateRange
@@ -82,16 +95,22 @@ export function queryWidgetData(
   const prevEndStr = prevEnd.toISOString().split("T")[0];
 
   // Filter current period records
-  const currentRecords = records.filter((r) => {
-    if (config.platform !== "all" && r.platform !== config.platform) return false;
-    return r.date >= startStr && r.date <= endStr;
-  });
+  const currentRecords = applyMarkup(
+    records.filter((r) => {
+      if (config.platform !== "all" && r.platform !== config.platform) return false;
+      return r.date >= startStr && r.date <= endStr;
+    }),
+    markupPercentage
+  );
 
   // Filter previous period records
-  const previousRecords = records.filter((r) => {
-    if (config.platform !== "all" && r.platform !== config.platform) return false;
-    return r.date >= prevStartStr && r.date <= prevEndStr;
-  });
+  const previousRecords = applyMarkup(
+    records.filter((r) => {
+      if (config.platform !== "all" && r.platform !== config.platform) return false;
+      return r.date >= prevStartStr && r.date <= prevEndStr;
+    }),
+    markupPercentage
+  );
 
   return config.metricIds.map((metricId) => {
     const metricDef = getMetricById(metricId);

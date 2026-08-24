@@ -29,6 +29,8 @@ interface Props {
   onEdit?: (widget: WidgetConfig) => void;
   onDelete?: (widgetId: string) => void;
   isEditMode?: boolean;
+  /** agency markup %, only ever passed for the client-facing perspective */
+  markupPercentage?: number;
 }
 
 const MILK_PALETTE = ["#FFE600", "#111111", "#666666", "#999999", "#CCCCCC"];
@@ -41,8 +43,9 @@ export function WidgetRenderer({
   onEdit,
   onDelete,
   isEditMode,
+  markupPercentage,
 }: Props) {
-  const dataResults = queryWidgetData(records, widget.dataConfig, globalDateRange);
+  const dataResults = queryWidgetData(records, widget.dataConfig, globalDateRange, markupPercentage);
   const contentResults =
     widget.widgetType === "content_table"
       ? queryContentPosts(contentPosts, widget.dataConfig, globalDateRange)

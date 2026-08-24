@@ -113,6 +113,8 @@ export interface WidgetDisplayConfig {
 export interface WidgetConfig {
   id: string;
   pageId: string;
+  /** groups this widget under a titled section within the page; undefined = ungrouped */
+  sectionId?: string;
   widgetType: WidgetType;
   title: string;
   grid: GridPos;
@@ -120,11 +122,19 @@ export interface WidgetConfig {
   displayConfig?: WidgetDisplayConfig;
 }
 
+export interface DashboardSection {
+  id: string;
+  title: string;
+  sortOrder: number;
+}
+
 export interface DashboardPage {
   id: string;
   dashboardId: string;
   title: string;
   sortOrder: number;
+  /** optional named groupings of widgets within the page, agency-defined */
+  sections?: DashboardSection[];
   widgets: WidgetConfig[];
 }
 
@@ -139,6 +149,12 @@ export interface Dashboard {
   pages: DashboardPage[];
   createdAt: string;
   updatedAt: string;
+  /**
+   * Hidden agency markup applied to spend/cost metrics for the client-facing
+   * view only. Agency admins always see true platform spend; markup is
+   * applied on top only when viewing/exporting as the client would see it.
+   */
+  markupPercentage?: number;
 }
 
 export interface DashboardTemplate {
