@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from "react";
 import { Client, Platform } from "@/types";
+import { supabase } from "@/lib/supabase-client";
 import {
   ConnectionRow,
   ScopeFilters,
@@ -10,7 +11,18 @@ import {
   updateConnectionScope,
   deleteConnection,
 } from "@/lib/supabase-data";
-import { Plus, Trash2, Filter, RefreshCw } from "lucide-react";
+import { Plus, Trash2, Filter, RefreshCw, Loader2 } from "lucide-react";
+
+const REAL_INGESTION_PLATFORMS: Platform[] = ["meta", "facebook_page", "instagram"];
+
+async function authedFetch(input: string, init: RequestInit = {}) {
+  const { data } = await supabase.auth.getSession();
+  const token = data.session?.access_token;
+  return fetch(input, {
+    ...init,
+    headers: { ...init.headers, "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+  });
+}
 
 interface Props {
   client: Client;
@@ -59,6 +71,8 @@ export function DataConnectionsPanel({ client, onChanged }: Props) {
   const [newAccountName, setNewAccountName] = useState("");
   const [newExternalId, setNewExternalId] = useState("");
   const [scopeDraft, setScopeDraft] = useState<Record<keyof ScopeFilters, string>>({} as any);
+  const [syncingId, setSyncingId] = useState<string | null>(null);
+  const [syncMessages, setSyncMessages] = useState<Record<string, string>>({});
 
   const load = async () => {
     setLoading(true);
@@ -97,6 +111,33 @@ export function DataConnectionsPanel({ client, onChanged }: Props) {
     await deleteConnection(connectionId);
     await load();
     onChanged();
+  };
+
+  const handleSyncNow = async (connectionId: string) => {
+    setSyncingId(connectionId);
+    setSyncMessages((prev) => ({ ...prev, [connectionId]: "" }));
+    try {
+      const res = await authedFetch("/api/ingest", { method: "POST", body: JSON.stringify({ connectionId }) });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || "Sync failed");
+      const detail = json.details?.[0];
+      if (detail?.status === "error") {
+        setSyncMessages((prev) => ({ ...prev, [connectionId]: detail.error }));
+      } else if (detail) {
+        const postsNote = detail.contentItemsSynced !== undefined ? ` • ${detail.contentItemsSynced} posts` : "";
+        setSyncMessages((prev) => ({
+          ...prev,
+          [connectionId]: `Synced ${detail.recordsSynced} day${detail.recordsSynced === 1 ? "" : "s"}${postsNote} (${detail.range.since} to ${detail.range.until})`,
+        }));
+      } else {
+        setSyncMessages((prev) => ({ ...prev, [connectionId]: "No matching connection found." }));
+      }
+    } catch (err) {
+      setSyncMessages((prev) => ({ ...prev, [connectionId]: err instanceof Error ? err.message : "Sync failed" }));
+    } finally {
+      setSyncingId(null);
+      await load();
+    }
   };
 
   const openScopeEditor = (conn: ConnectionRow) => {
@@ -209,11 +250,38 @@ export function DataConnectionsPanel({ client, onChanged }: Props) {
                         </span>
                       )}
                     </div>
+                    <div className="text-neutral-500 mt-0.5">
+                      {conn.lastSyncedAt ? `Last synced ${new Date(conn.lastSyncedAt).toLocaleString()}` : "Never synced"}
+                    </div>
+                    {syncMessages[conn.id] && (
+                      <div className={conn.syncStatus === "error" ? "text-red-600 mt-0.5" : "text-neutral-700 mt-0.5"}>
+                        {syncMessages[conn.id]}
+                      </div>
+                    )}
                   </div>
                   <div className="flex items-center gap-3">
-                    <span className="inline-block px-2 py-0.5 bg-green-100 text-green-800 border border-green-300 font-bold uppercase">
+                    <span
+                      className={`inline-block px-2 py-0.5 border font-bold uppercase ${
+                        conn.syncStatus === "error"
+                          ? "bg-red-100 text-red-800 border-red-300"
+                          : conn.syncStatus === "paused"
+                          ? "bg-neutral-100 text-neutral-600 border-neutral-300"
+                          : "bg-green-100 text-green-800 border-green-300"
+                      }`}
+                    >
                       {conn.syncStatus}
                     </span>
+                    {REAL_INGESTION_PLATFORMS.includes(conn.platform) && (
+                      <button
+                        onClick={() => handleSyncNow(conn.id)}
+                        disabled={syncingId === conn.id}
+                        title="Pull the latest data for this connection now"
+                        className="text-neutral-600 hover:text-black flex items-center gap-1 disabled:opacity-50"
+                      >
+                        {syncingId === conn.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+                        Sync Now
+                      </button>
+                    )}
                     <button
                       onClick={() => (expandedId === conn.id ? setExpandedId(null) : openScopeEditor(conn))}
                       title="Edit scope filters"
@@ -271,8 +339,9 @@ export function DataConnectionsPanel({ client, onChanged }: Props) {
 
       <div className="mt-8 flex items-center gap-2 text-[11px] font-mono text-neutral-500 border-t border-neutral-200 pt-4">
         <RefreshCw className="w-3.5 h-3.5" />
-        Real ingestion (actual Meta/Google/TikTok data pulls) isn&apos;t wired up yet - that needs each
-        platform&apos;s own API credentials, separate from this connection list.
+        Meta (Meta Ads, Facebook Page, Instagram) syncs for real via &quot;Sync Now&quot; above, and
+        automatically every day. Google Ads and TikTok Ads connections can be added for scope-filter
+        planning now, but their data pulls aren&apos;t wired up yet.
       </div>
     </div>
   );
