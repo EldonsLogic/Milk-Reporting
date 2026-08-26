@@ -3,7 +3,8 @@
 import React, { useState } from "react";
 import { Client } from "@/types";
 import { createClient, deleteClient, updateClient } from "@/lib/supabase-data";
-import { Plus, Trash2, LayoutDashboard, Pencil } from "lucide-react";
+import { Plus, Trash2, LayoutDashboard, Pencil, KeyRound } from "lucide-react";
+import { ClientLoginManager } from "./ClientLoginManager";
 
 interface Props {
   agencyId: string;
@@ -21,6 +22,7 @@ export function ClientManager({ agencyId, clients, onClientsChanged, onSelectCli
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [editingClient, setEditingClient] = useState<Client | null>(null);
+  const [loginManagerClient, setLoginManagerClient] = useState<Client | null>(null);
   const [editLogoUrl, setEditLogoUrl] = useState("");
   const [editName, setEditName] = useState("");
   const [editObjective, setEditObjective] = useState<Client["objectiveType"]>("brand_awareness");
@@ -190,6 +192,14 @@ export function ClientManager({ agencyId, clients, onClientsChanged, onSelectCli
                 <LayoutDashboard className="w-3.5 h-3.5" />
                 New Dashboard
               </button>
+              <button
+                onClick={() => setLoginManagerClient(c)}
+                title="Create or manage this client's login"
+                className="px-3 py-1.5 border border-black font-mono text-xs font-bold hover:bg-neutral-100 flex items-center gap-1"
+              >
+                <KeyRound className="w-3.5 h-3.5" />
+                Client Login
+              </button>
             </div>
           </div>
         ))}
@@ -325,6 +335,10 @@ export function ClientManager({ agencyId, clients, onClientsChanged, onSelectCli
             </div>
           </form>
         </div>
+      )}
+
+      {loginManagerClient && (
+        <ClientLoginManager client={loginManagerClient} onClose={() => setLoginManagerClient(null)} />
       )}
     </div>
   );
