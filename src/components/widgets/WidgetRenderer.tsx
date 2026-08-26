@@ -18,6 +18,7 @@ import {
   YAxis,
   Tooltip,
   CartesianGrid,
+  Legend,
 } from "recharts";
 import { ArrowUpRight, ArrowDownRight, Sparkles, AlertCircle, ImageOff, ExternalLink, Heart, MessageCircle, Share2 } from "lucide-react";
 
@@ -34,6 +35,25 @@ interface Props {
 }
 
 const MILK_PALETTE = ["#FFE600", "#111111", "#666666", "#999999", "#CCCCCC"];
+// Distinct-enough series colors for multi-metric line/area charts - black
+// first (primary), yellow second (brand accent), then grays.
+const MILK_LINE_PALETTE = ["#111111", "#EAB308", "#666666", "#999999"];
+
+// Recharts wants one data array with a key per series, but queryWidgetData
+// returns one AggregatedQueryResult (with its own trendData) per metric -
+// merge them by date so a multi-metric widget actually plots every line,
+// not just the first.
+function mergeTrendData(results: ReturnType<typeof queryWidgetData>) {
+  const byDate = new Map<string, Record<string, string | number | null>>();
+  for (const result of results) {
+    for (const point of result.trendData || []) {
+      const row = byDate.get(point.date) || { date: point.date };
+      row[result.metricId] = point.value;
+      byDate.set(point.date, row);
+    }
+  }
+  return Array.from(byDate.values());
+}
 
 export function WidgetRenderer({
   widget,
@@ -170,7 +190,7 @@ function renderWidgetBody(
 
     case "line_chart":
     case "metric_comparison": {
-      const chartData = primaryResult.trendData || [];
+      const chartData = mergeTrendData(results);
       return (
         <div className="h-full w-full min-h-[140px] pt-1">
           <ResponsiveContainer width="100%" height="100%">
@@ -188,15 +208,20 @@ function renderWidgetBody(
                   fontFamily: "monospace",
                 }}
               />
-              <Line
-                type="monotone"
-                dataKey="value"
-                name={primaryResult.displayName}
-                stroke="#111111"
-                strokeWidth={2}
-                dot={false}
-                activeDot={{ r: 4, fill: "#FFE600", stroke: "#111111" }}
-              />
+              {results.length > 1 && <Legend wrapperStyle={{ fontSize: "10px", fontFamily: "monospace" }} />}
+              {results.map((res, i) => (
+                <Line
+                  key={res.metricId}
+                  type="monotone"
+                  dataKey={res.metricId}
+                  name={res.displayName}
+                  stroke={MILK_LINE_PALETTE[i % MILK_LINE_PALETTE.length]}
+                  strokeWidth={2}
+                  dot={false}
+                  activeDot={{ r: 4, fill: "#FFE600", stroke: "#111111" }}
+                  isAnimationActive={false}
+                />
+              ))}
             </LineChart>
           </ResponsiveContainer>
         </div>
@@ -204,16 +229,18 @@ function renderWidgetBody(
     }
 
     case "area_chart": {
-      const chartData = primaryResult.trendData || [];
+      const chartData = mergeTrendData(results);
       return (
         <div className="h-full w-full min-h-[140px] pt-1">
           <ResponsiveContainer width="100%" height="100%">
             <AreaChart data={chartData} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
               <defs>
-                <linearGradient id="milkYellowGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#FFE600" stopOpacity={0.8} />
-                  <stop offset="95%" stopColor="#FFE600" stopOpacity={0.0} />
-                </linearGradient>
+                {results.map((res, i) => (
+                  <linearGradient key={res.metricId} id={`areaGrad-${res.metricId}`} x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor={MILK_LINE_PALETTE[i % MILK_LINE_PALETTE.length]} stopOpacity={0.8} />
+                    <stop offset="95%" stopColor={MILK_LINE_PALETTE[i % MILK_LINE_PALETTE.length]} stopOpacity={0.05} />
+                  </linearGradient>
+                ))}
               </defs>
               <CartesianGrid strokeDasharray="2 2" stroke="#E2E2DF" vertical={false} />
               <XAxis dataKey="date" tick={{ fontSize: 10, fill: "#666" }} tickLine={false} />
@@ -227,14 +254,19 @@ function renderWidgetBody(
                   fontFamily: "monospace",
                 }}
               />
-              <Area
-                type="monotone"
-                dataKey="value"
-                name={primaryResult.displayName}
-                stroke="#111111"
-                fillOpacity={1}
-                fill="url(#milkYellowGrad)"
-              />
+              {results.length > 1 && <Legend wrapperStyle={{ fontSize: "10px", fontFamily: "monospace" }} />}
+              {results.map((res, i) => (
+                <Area
+                  key={res.metricId}
+                  type="monotone"
+                  dataKey={res.metricId}
+                  name={res.displayName}
+                  stroke={MILK_LINE_PALETTE[i % MILK_LINE_PALETTE.length]}
+                  fillOpacity={1}
+                  fill={`url(#areaGrad-${res.metricId})`}
+                  isAnimationActive={false}
+                />
+              ))}
             </AreaChart>
           </ResponsiveContainer>
         </div>
@@ -242,7 +274,7 @@ function renderWidgetBody(
     }
 
     case "bar_chart": {
-      const chartData = (primaryResult.trendData || []).slice(-10);
+      const chartData = mergeTrendData(results).slice(-10);
       return (
         <div className="h-full w-full min-h-[140px] pt-1">
           <ResponsiveContainer width="100%" height="100%">
@@ -259,7 +291,16 @@ function renderWidgetBody(
                   fontFamily: "monospace",
                 }}
               />
-              <Bar dataKey="value" name={primaryResult.displayName} fill="#111111" />
+              {results.length > 1 && <Legend wrapperStyle={{ fontSize: "10px", fontFamily: "monospace" }} />}
+              {results.map((res, i) => (
+                <Bar
+                  key={res.metricId}
+                  dataKey={res.metricId}
+                  name={res.displayName}
+                  fill={MILK_LINE_PALETTE[i % MILK_LINE_PALETTE.length]}
+                  isAnimationActive={false}
+                />
+              ))}
             </BarChart>
           </ResponsiveContainer>
         </div>

@@ -322,26 +322,19 @@ function calculateMetricValue(records: RawDailyRecord[], metricId: string): numb
 }
 
 function getRawFieldValue(r: RawDailyRecord, metricId: string): number {
-  switch (metricId) {
-    case "spend":
-      return r.spend;
-    case "impressions":
-      return r.impressions;
-    case "reach":
-      return r.reach;
-    case "clicks":
-      return r.clicks;
-    case "video_views":
-      return r.videoViews;
-    case "post_engagements":
-      return r.postEngagements;
-    case "conversions":
-      return r.conversions;
-    case "conversion_value":
-      return r.conversionValue;
-    default:
-      return 0;
+  // Generalized from a hand-maintained 8-metric switch: metric-catalog.ts's
+  // sourceField values are already the exact RawDailyRecord property names
+  // (e.g. "total_followers" -> "totalFollowers"), so any non-derived metric
+  // can look itself up directly instead of needing a dedicated case here.
+  // Derived metrics (no sourceField, e.g. CTR/CPM) still can't produce a
+  // sensible single-record trend value and correctly fall through to 0 -
+  // that part of the behavior is unchanged.
+  const metricDef = getMetricById(metricId);
+  if (metricDef?.sourceField) {
+    const value = r[metricDef.sourceField as keyof RawDailyRecord];
+    return typeof value === "number" ? value : 0;
   }
+  return 0;
 }
 
 // Post-level query - deliberately separate from queryWidgetData, which

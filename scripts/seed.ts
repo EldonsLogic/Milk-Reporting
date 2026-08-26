@@ -164,20 +164,27 @@ async function main() {
 
   console.log("4/6 Seeding daily metrics...");
   for (const mockClient of MOCK_CLIENTS) {
+    // Delete-then-insert rather than upsert: the unique constraint includes
+    // adset_id/ad_id, which are NULL for this mock data - and NULL is never
+    // considered equal to NULL for uniqueness purposes in Postgres, so
+    // ON CONFLICT never matched and every re-run was silently inserting
+    // duplicate rows instead of replacing them (found this by re-checking
+    // seeded data directly and noticing every row appeared twice+).
+    const { error: clearPaidError } = await supabase.from("paid_daily_metrics").delete().eq("client_id", mockClient.id);
+    if (clearPaidError) throw clearPaidError;
+    const { error: clearOrganicError } = await supabase.from("organic_daily_metrics").delete().eq("client_id", mockClient.id);
+    if (clearOrganicError) throw clearOrganicError;
+
     const records = generateMockRecords(mockClient.id);
     const paidRows = records.filter((r) => PAID_PLATFORMS.has(r.platform)).map((r) => paidRow(mockClient.id, r));
     const organicRows = records.filter((r) => !PAID_PLATFORMS.has(r.platform)).map((r) => organicRow(mockClient.id, r));
 
     for (let i = 0; i < paidRows.length; i += 500) {
-      const { error } = await supabase.from("paid_daily_metrics").upsert(paidRows.slice(i, i + 500), {
-        onConflict: "client_id,platform,date,campaign_id,adset_id,ad_id",
-      });
+      const { error } = await supabase.from("paid_daily_metrics").insert(paidRows.slice(i, i + 500));
       if (error) throw error;
     }
     for (let i = 0; i < organicRows.length; i += 500) {
-      const { error } = await supabase.from("organic_daily_metrics").upsert(organicRows.slice(i, i + 500), {
-        onConflict: "client_id,platform,date",
-      });
+      const { error } = await supabase.from("organic_daily_metrics").insert(organicRows.slice(i, i + 500));
       if (error) throw error;
     }
     console.log(`   ${mockClient.name}: ${paidRows.length} paid rows, ${organicRows.length} organic rows`);
@@ -210,7 +217,12 @@ async function main() {
   }
 
   console.log("6/6 Seeding dashboards...");
-  const templateByIndex = [MOCK_TEMPLATES[0], MOCK_TEMPLATES[1], MOCK_TEMPLATES[0], MOCK_TEMPLATES[0]];
+  // MOCK_CLIENTS order: Aura (paid, brand_awareness), Apex (paid, lead_gen),
+  // Velox (paid, ecommerce), Lumina (organic-only, social_content) - only
+  // Lumina has no paid connections, so only she gets the organic template;
+  // everyone else's widgets (platform: "all"/meta-scoped) need real paid
+  // data behind them, which the other three have and Lumina doesn't.
+  const templateByIndex = [MOCK_TEMPLATES[0], MOCK_TEMPLATES[0], MOCK_TEMPLATES[0], MOCK_TEMPLATES[1]];
   for (let ci = 0; ci < MOCK_CLIENTS.length; ci++) {
     const mockClient = MOCK_CLIENTS[ci];
     const template = templateByIndex[ci] || MOCK_TEMPLATES[0];
@@ -225,6 +237,14 @@ async function main() {
       is_default: true,
     });
     if (dashError) throw dashError;
+
+    // Delete-then-recreate pages (cascades to widgets via FK) rather than
+    // upsert-in-place - upsert only touches matching ids, so a re-run with
+    // a different (e.g. shorter) template silently orphaned old widgets
+    // instead of removing them. Same pattern as saveDashboard() in
+    // src/lib/supabase-data.ts.
+    const { error: clearError } = await supabase.from("dashboard_pages").delete().eq("dashboard_id", dashboardId);
+    if (clearError) throw clearError;
 
     for (let pi = 0; pi < template.pages.length; pi++) {
       const page = template.pages[pi];
