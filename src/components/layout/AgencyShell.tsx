@@ -1,11 +1,14 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
-import { MOCK_CLIENTS, generateMockRecords, generateMockContentPosts, MOCK_TEMPLATES } from "@/lib/mock-data";
+import React, { useCallback, useEffect, useState } from "react";
 import { Client, Dashboard } from "@/types";
 import { DashboardBuilder } from "@/components/dashboard/DashboardBuilder";
 import { MetricCatalogBrowser } from "@/components/data-catalog/MetricCatalogBrowser";
 import { ClientManager } from "@/components/clients/ClientManager";
+import { DataConnectionsPanel } from "@/components/clients/DataConnectionsPanel";
+import { fetchClients, fetchDashboardsForClient, fetchRecords, fetchContentPosts, saveDashboard, createDashboard, setDefaultDashboard } from "@/lib/supabase-data";
+import { useAuth } from "@/lib/auth-context";
+import { RawDailyRecord, ContentPost } from "@/types";
 import {
   LayoutDashboard,
   Database,
@@ -13,106 +16,93 @@ import {
   Users,
   Eye,
   Shield,
+  LogOut,
 } from "lucide-react";
 
-const DASHBOARDS_STORAGE_KEY = "milk-reporting:dashboards";
-
-export function AgencyShell() {
-  const [selectedClient, setSelectedClient] = useState<Client>(MOCK_CLIENTS[0]);
+export function AgencyShell({ agencyId }: { agencyId: string }) {
+  const { signOut } = useAuth();
+  const [clients, setClients] = useState<Client[]>([]);
+  const [clientsLoading, setClientsLoading] = useState(true);
+  const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"dashboards" | "catalog" | "sync" | "clients">("dashboards");
   const [userRole, setUserRole] = useState<"agency_admin" | "client_viewer">("agency_admin");
 
-  // Client-specific dashboard state
-  const [dashboards, setDashboards] = useState<Record<string, Dashboard>>({
-    "client-aura-cosmetics": {
-      id: "dash-aura-1",
-      clientId: "client-aura-cosmetics",
-      title: "Aura Brand Awareness & Reach Overview",
-      description: "Reach, CPM, Frequency, and Video completion performance.",
-      globalDateRange: "last_30_days",
-      pages: MOCK_TEMPLATES[0].pages.map((p, i) => ({
-        ...p,
-        id: `p-aura-${i}`,
-        dashboardId: "dash-aura-1",
-      })),
-      createdAt: "2026-08-01T00:00:00Z",
-      updatedAt: "2026-08-17T00:00:00Z",
-    },
-    "client-lumina-studio": {
-      id: "dash-lumina-1",
-      clientId: "client-lumina-studio",
-      title: "Lumina Instagram & Organic Social Growth",
-      description: "Follower growth, Reel plays, Story retention & engagement.",
-      globalDateRange: "last_30_days",
-      pages: MOCK_TEMPLATES[1].pages.map((p, i) => ({
-        ...p,
-        id: `p-lumina-${i}`,
-        dashboardId: "dash-lumina-1",
-      })),
-      createdAt: "2026-08-01T00:00:00Z",
-      updatedAt: "2026-08-17T00:00:00Z",
-    },
-  });
+  const [dashboards, setDashboards] = useState<Dashboard[]>([]);
+  const [dashboardsLoading, setDashboardsLoading] = useState(false);
+  const [selectedDashboardId, setSelectedDashboardId] = useState<string | null>(null);
+  const [records, setRecords] = useState<RawDailyRecord[]>([]);
+  const [contentPosts, setContentPosts] = useState<ContentPost[]>([]);
 
-  // Dashboards are seeded above (SSR-safe defaults); after mount, layer in
-  // whatever was last saved to localStorage so edits survive a reload. This
-  // is Phase 1 persistence - swap for real Supabase reads once that's live.
-  useEffect(() => {
-    const raw = window.localStorage.getItem(DASHBOARDS_STORAGE_KEY);
-    if (!raw) return;
+  const selectedClient = clients.find((c) => c.id === selectedClientId) || null;
+
+  const refreshClients = useCallback(async () => {
+    setClientsLoading(true);
     try {
-      const saved = JSON.parse(raw) as Record<string, Dashboard>;
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- hydrating from a browser-only store (localStorage) after mount
-      setDashboards((prev) => ({ ...prev, ...saved }));
-    } catch {
-      // corrupt/old storage shape - ignore and keep defaults
+      const list = await fetchClients(agencyId);
+      setClients(list);
+      setSelectedClientId((prev) => prev || list[0]?.id || null);
+    } finally {
+      setClientsLoading(false);
+    }
+  }, [agencyId]);
+
+  useEffect(() => {
+    refreshClients();
+  }, [refreshClients]);
+
+  const loadClientWorkspace = useCallback(async (clientId: string) => {
+    setDashboardsLoading(true);
+    try {
+      const [dashList, recordList, contentList] = await Promise.all([
+        fetchDashboardsForClient(clientId),
+        fetchRecords(clientId),
+        fetchContentPosts(clientId),
+      ]);
+      setDashboards(dashList);
+      setSelectedDashboardId(dashList[0]?.id || null);
+      setRecords(recordList);
+      setContentPosts(contentList);
+    } finally {
+      setDashboardsLoading(false);
     }
   }, []);
 
-  const activeDashboard = dashboards[selectedClient.id] || {
-    id: `dash-${selectedClient.id}`,
-    clientId: selectedClient.id,
-    title: `${selectedClient.name} Default Dashboard`,
-    globalDateRange: "last_30_days",
-    pages: MOCK_TEMPLATES[0].pages.map((p, i) => ({
-      ...p,
-      id: `p-def-${i}`,
-      dashboardId: `dash-${selectedClient.id}`,
-    })),
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
+  useEffect(() => {
+    if (selectedClientId) loadClientWorkspace(selectedClientId);
+  }, [selectedClientId, loadClientWorkspace]);
+
+  const activeDashboard = dashboards.find((d) => d.id === selectedDashboardId) || dashboards[0] || null;
+
+  const handleSaveDashboard = async (updated: Dashboard) => {
+    await saveDashboard(updated);
+    setDashboards((prev) => prev.map((d) => (d.id === updated.id ? updated : d)));
   };
 
-  const currentRecords = generateMockRecords(selectedClient.id);
-  const currentContentPosts = generateMockContentPosts(selectedClient.id);
-
-  const persistDashboards = (updated: Record<string, Dashboard>) => {
-    setDashboards(updated);
-    window.localStorage.setItem(DASHBOARDS_STORAGE_KEY, JSON.stringify(updated));
-  };
-
-  const handleSaveDashboard = (updatedDashboard: Dashboard) => {
-    persistDashboards({
-      ...dashboards,
-      [selectedClient.id]: updatedDashboard,
-    });
-    alert("Dashboard layout saved successfully!");
-  };
-
-  const handleDuplicateDashboard = (dashboardToDup: Dashboard) => {
-    const duplicated: Dashboard = {
-      ...dashboardToDup,
-      id: `dash-${Date.now()}`,
-      title: `${dashboardToDup.title} (Copy)`,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+  const handleDuplicateDashboard = async (dashboardToDup: Dashboard) => {
+    if (!selectedClientId) return;
+    const created = await createDashboard(selectedClientId, `${dashboardToDup.title} (Copy)`);
+    // Copy over pages/widgets/markup from the source dashboard onto the freshly created one.
+    const copy: Dashboard = {
+      ...created,
+      markupPercentage: dashboardToDup.markupPercentage,
+      pages: dashboardToDup.pages.map((p, i) => ({
+        ...p,
+        id: `p-${Date.now()}-${i}`,
+        dashboardId: created.id,
+        widgets: p.widgets.map((w) => ({ ...w, id: `w-${Date.now()}-${Math.round(Math.random() * 1e6)}`, pageId: `p-${Date.now()}-${i}` })),
+      })),
     };
-    persistDashboards({
-      ...dashboards,
-      [selectedClient.id]: duplicated,
-    });
-    alert("Dashboard duplicated successfully!");
+    await saveDashboard(copy);
+    setDashboards((prev) => [...prev, copy]);
   };
+
+  if (clientsLoading) {
+    return (
+      <div className="min-h-screen bg-milk-bg flex items-center justify-center">
+        <p className="font-mono text-xs text-neutral-500">Loading clients...</p>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-milk-bg flex flex-col overflow-x-hidden">
@@ -134,14 +124,12 @@ export function AgencyShell() {
           {/* Client Selector Dropdown */}
           <div className="relative max-w-[220px] sm:max-w-xs">
             <select
-              value={selectedClient.id}
-              onChange={(e) => {
-                const found = MOCK_CLIENTS.find((c) => c.id === e.target.value);
-                if (found) setSelectedClient(found);
-              }}
+              value={selectedClientId || ""}
+              onChange={(e) => setSelectedClientId(e.target.value)}
               className="w-full max-w-full truncate bg-neutral-900 text-white font-mono text-xs font-bold border border-neutral-700 px-3 py-1.5 focus:outline-none focus:border-milk-yellow cursor-pointer"
             >
-              {MOCK_CLIENTS.map((c) => (
+              {clients.length === 0 && <option value="">No clients yet</option>}
+              {clients.map((c) => (
                 <option key={c.id} value={c.id}>
                   Client: {c.name} ({c.objectiveType.replace("_", " ")})
                 </option>
@@ -203,8 +191,8 @@ export function AgencyShell() {
           )}
         </nav>
 
-        {/* User Role Switcher */}
-        <div className="flex items-center space-x-2 text-xs font-mono">
+        {/* User Role Switcher + Sign Out */}
+        <div className="flex items-center gap-2 text-xs font-mono">
           <button
             onClick={() =>
               setUserRole(userRole === "agency_admin" ? "client_viewer" : "agency_admin")
@@ -227,71 +215,106 @@ export function AgencyShell() {
               </>
             )}
           </button>
+          <button
+            onClick={signOut}
+            title="Sign out"
+            className="px-2.5 py-1 border border-neutral-700 text-neutral-300 hover:text-white hover:border-white flex items-center gap-1 font-bold"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+          </button>
         </div>
       </header>
 
       {/* Main Content Area */}
       <main className="flex-1">
         {activeTab === "dashboards" && (
-          <DashboardBuilder
-            // DashboardBuilder copies this prop into local state once on
-            // mount and never re-syncs it - force a remount whenever the
-            // active dashboard's identity or content actually changes
-            // (client switch, or a save/hydration replacing the object),
-            // otherwise the builder keeps showing stale title/widgets.
-            key={`${activeDashboard.id}-${activeDashboard.updatedAt}`}
-            dashboard={activeDashboard}
-            records={currentRecords}
-            contentPosts={currentContentPosts}
-            onSaveDashboard={handleSaveDashboard}
-            onDuplicateDashboard={handleDuplicateDashboard}
-            userRole={userRole}
-          />
+          <>
+            {!selectedClient ? (
+              <div className="p-12 text-center font-mono text-sm text-neutral-500">
+                No clients yet. Go to <strong>Clients &amp; Templates</strong> to create one.
+              </div>
+            ) : dashboardsLoading ? (
+              <div className="p-12 text-center font-mono text-xs text-neutral-500">Loading dashboard...</div>
+            ) : !activeDashboard ? (
+              <div className="p-12 text-center font-mono text-sm text-neutral-500">
+                {selectedClient.name} has no dashboards yet. Go to <strong>Clients &amp; Templates</strong> to
+                create one.
+              </div>
+            ) : (
+              <>
+                {dashboards.length > 1 && userRole === "agency_admin" && (
+                  <div className="bg-white border-b border-neutral-200 px-6 py-2 flex items-center gap-3 text-xs font-mono">
+                    <span className="text-neutral-500 font-bold uppercase">Dashboard:</span>
+                    <select
+                      value={activeDashboard.id}
+                      onChange={(e) => setSelectedDashboardId(e.target.value)}
+                      className="p-1.5 border border-neutral-300 focus:border-black bg-milk-bg"
+                    >
+                      {dashboards.map((d) => (
+                        <option key={d.id} value={d.id}>
+                          {d.title}
+                          {d.isDefault ? " (client sees this)" : ""}
+                        </option>
+                      ))}
+                    </select>
+                    {!activeDashboard.isDefault && (
+                      <button
+                        onClick={async () => {
+                          if (!selectedClientId) return;
+                          await setDefaultDashboard(selectedClientId, activeDashboard.id);
+                          await loadClientWorkspace(selectedClientId);
+                        }}
+                        className="px-2 py-1 border border-neutral-300 hover:border-black font-bold"
+                        title="Make this the dashboard the client sees when they log in"
+                      >
+                        Set as Client&apos;s Default
+                      </button>
+                    )}
+                  </div>
+                )}
+                <DashboardBuilder
+                  // DashboardBuilder copies this prop into local state once on
+                  // mount and never re-syncs it - force a remount whenever the
+                  // active dashboard's identity or content actually changes.
+                  key={`${activeDashboard.id}-${activeDashboard.updatedAt}`}
+                  dashboard={activeDashboard}
+                  records={records}
+                  contentPosts={contentPosts}
+                  onSaveDashboard={handleSaveDashboard}
+                  onDuplicateDashboard={handleDuplicateDashboard}
+                  userRole={userRole}
+                />
+              </>
+            )}
+          </>
         )}
 
         {activeTab === "catalog" && <MetricCatalogBrowser />}
 
         {activeTab === "clients" && (
           <ClientManager
+            agencyId={agencyId}
+            clients={clients}
+            onClientsChanged={refreshClients}
             onSelectClient={(client) => {
-              setSelectedClient(client);
+              setSelectedClientId(client.id);
               setActiveTab("dashboards");
+            }}
+            onCreateDashboard={async (client, title) => {
+              const created = await createDashboard(client.id, title);
+              if (client.id === selectedClientId) {
+                await loadClientWorkspace(client.id);
+                setSelectedDashboardId(created.id);
+              }
             }}
           />
         )}
 
-        {activeTab === "sync" && (
-          <div className="p-8 max-w-4xl mx-auto">
-            <h2 className="text-2xl font-display font-black text-black mb-2">
-              Connected Platform Connections
-            </h2>
-            <p className="text-xs font-mono text-neutral-600 mb-6">
-              Data Ingestion Layer (Airbyte + Native Meta Graph API Connector). Scheduled daily sync.
-            </p>
-            <div className="space-y-4">
-              {selectedClient.connectedPlatforms.map((p) => (
-                <div
-                  key={p.externalId}
-                  className="bg-white border border-black p-4 flex items-center justify-between text-xs font-mono shadow-crisp-sm"
-                >
-                  <div>
-                    <div className="font-bold text-sm text-black">{p.accountName}</div>
-                    <div className="text-neutral-500">
-                      Platform: <span className="uppercase">{p.platform}</span> • Account ID: {p.externalId}
-                    </div>
-                  </div>
-                  <div className="text-right">
-                    <span className="inline-block px-2 py-0.5 bg-green-100 text-green-800 border border-green-300 font-bold uppercase mb-1">
-                      {p.status}
-                    </span>
-                    <div className="text-[10px] text-neutral-400">
-                      Last Synced: {new Date(p.lastSyncedAt).toLocaleString()}
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
+        {activeTab === "sync" && selectedClient && (
+          <DataConnectionsPanel client={selectedClient} onChanged={() => refreshClients()} />
+        )}
+        {activeTab === "sync" && !selectedClient && (
+          <div className="p-12 text-center font-mono text-sm text-neutral-500">Select a client first.</div>
         )}
       </main>
     </div>

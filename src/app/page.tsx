@@ -1,5 +1,5 @@
-import { AgencyShell } from "@/components/layout/AgencyShell";
+import { AppGate } from "@/components/layout/AppGate";
 
 export default function Home() {
-  return <AgencyShell />;
+  return <AppGate />;
 }
