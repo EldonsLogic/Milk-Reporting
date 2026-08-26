@@ -2,7 +2,8 @@
 
 import React, { useEffect, useState } from "react";
 import { METRIC_CATALOG } from "@/lib/metric-catalog";
-import { loadCustomMetrics, saveCustomMetric, deleteCustomMetric, slugifyMetricId } from "@/lib/custom-metrics";
+import { slugifyMetricId } from "@/lib/custom-metrics";
+import { fetchCustomMetrics, saveCustomMetricToSupabase, deleteCustomMetricFromSupabase } from "@/lib/supabase-data";
 import { validateFormula } from "@/lib/formula-evaluator";
 import { MetricCategory, MetricDefinition, Platform, DataType } from "@/types";
 import { Search, Filter, Database, Code, Info, Plus, Trash2, X } from "lucide-react";
@@ -35,7 +36,12 @@ const EMPTY_DRAFT: DraftMetric = {
   description: "",
 };
 
-export function MetricCatalogBrowser() {
+interface Props {
+  agencyId: string;
+  onCustomMetricsChanged: () => void;
+}
+
+export function MetricCatalogBrowser({ agencyId, onCustomMetricsChanged }: Props) {
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedCategory, setSelectedCategory] = useState<MetricCategory | "All">("All");
   const [selectedPlatform, setSelectedPlatform] = useState<Platform | "All">("All");
@@ -43,10 +49,16 @@ export function MetricCatalogBrowser() {
   const [isBuilderOpen, setIsBuilderOpen] = useState(false);
   const [draft, setDraft] = useState<DraftMetric>(EMPTY_DRAFT);
   const [formulaError, setFormulaError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  const loadCustomMetrics = async () => {
+    setCustomMetrics(await fetchCustomMetrics(agencyId));
+  };
 
   useEffect(() => {
-    setCustomMetrics(loadCustomMetrics());
-  }, []);
+    loadCustomMetrics();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agencyId]);
 
   const categories: (MetricCategory | "All")[] = ["All", ...CATEGORIES];
 
@@ -65,7 +77,7 @@ export function MetricCatalogBrowser() {
     return matchesSearch && matchesCategory && matchesPlatform;
   });
 
-  const handleSaveCustomMetric = () => {
+  const handleSaveCustomMetric = async () => {
     if (!draft.displayName.trim() || !draft.formula.trim()) return;
     const check = validateFormula(draft.formula);
     if (!check.valid) {
@@ -85,16 +97,28 @@ export function MetricCatalogBrowser() {
       supportedDimensions: ["date", "platform", "campaign"],
     };
 
-    const updated = saveCustomMetric(metric);
-    setCustomMetrics(updated);
-    setIsBuilderOpen(false);
-    setDraft(EMPTY_DRAFT);
-    setFormulaError(null);
+    setSaveError(null);
+    try {
+      await saveCustomMetricToSupabase(agencyId, metric);
+      await loadCustomMetrics();
+      onCustomMetricsChanged();
+      setIsBuilderOpen(false);
+      setDraft(EMPTY_DRAFT);
+      setFormulaError(null);
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : "Failed to save metric");
+    }
   };
 
-  const handleDeleteCustomMetric = (id: string) => {
+  const handleDeleteCustomMetric = async (id: string) => {
     if (!confirm("Delete this custom metric? Any widgets using it will show no data.")) return;
-    setCustomMetrics(deleteCustomMetric(id));
+    try {
+      await deleteCustomMetricFromSupabase(id);
+      await loadCustomMetrics();
+      onCustomMetricsChanged();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "Failed to delete metric");
+    }
   };
 
   return (
@@ -341,6 +365,8 @@ export function MetricCatalogBrowser() {
                 </span>
               </div>
             </div>
+
+            {saveError && <p className="text-xs font-mono text-red-600 mt-3">{saveError}</p>}
 
             <div className="flex justify-end gap-2 mt-6">
               <button

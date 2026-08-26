@@ -6,7 +6,8 @@ import { DashboardBuilder } from "@/components/dashboard/DashboardBuilder";
 import { MetricCatalogBrowser } from "@/components/data-catalog/MetricCatalogBrowser";
 import { ClientManager } from "@/components/clients/ClientManager";
 import { DataConnectionsPanel } from "@/components/clients/DataConnectionsPanel";
-import { fetchClients, fetchDashboardsForClient, fetchRecords, fetchContentPosts, saveDashboard, createDashboard, setDefaultDashboard } from "@/lib/supabase-data";
+import { fetchClients, fetchDashboardsForClient, fetchRecords, fetchContentPosts, fetchCustomMetrics, saveDashboard, createDashboard, setDefaultDashboard } from "@/lib/supabase-data";
+import { setCustomMetricsCache } from "@/lib/metric-catalog";
 import { useAuth } from "@/lib/auth-context";
 import { RawDailyRecord, ContentPost } from "@/types";
 import {
@@ -50,6 +51,14 @@ export function AgencyShell({ agencyId }: { agencyId: string }) {
     refreshClients();
   }, [refreshClients]);
 
+  const refreshCustomMetrics = useCallback(async () => {
+    setCustomMetricsCache(await fetchCustomMetrics(agencyId));
+  }, [agencyId]);
+
+  useEffect(() => {
+    refreshCustomMetrics();
+  }, [refreshCustomMetrics]);
+
   const loadClientWorkspace = useCallback(async (clientId: string) => {
     setDashboardsLoading(true);
     try {
@@ -74,11 +83,27 @@ export function AgencyShell({ agencyId }: { agencyId: string }) {
   const activeDashboard = dashboards.find((d) => d.id === selectedDashboardId) || dashboards[0] || null;
 
   const handleSaveDashboard = async (updated: Dashboard) => {
-    await saveDashboard(updated);
-    setDashboards((prev) => prev.map((d) => (d.id === updated.id ? updated : d)));
+    // The Save button fires this without awaiting or catching, so an
+    // unhandled rejection here previously meant "click Save, nothing
+    // visibly happens" on any failure - surfacing it explicitly instead.
+    try {
+      await saveDashboard(updated);
+      setDashboards((prev) => prev.map((d) => (d.id === updated.id ? updated : d)));
+    } catch (err) {
+      alert(`Failed to save dashboard: ${err instanceof Error ? err.message : "Unknown error"}`);
+    }
   };
 
   const handleDuplicateDashboard = async (dashboardToDup: Dashboard) => {
+    if (!selectedClientId) return;
+    try {
+      await duplicateDashboardImpl(dashboardToDup);
+    } catch (err) {
+      alert(`Failed to duplicate dashboard: ${err instanceof Error ? err.message : "Unknown error"}`);
+    }
+  };
+
+  const duplicateDashboardImpl = async (dashboardToDup: Dashboard) => {
     if (!selectedClientId) return;
     const created = await createDashboard(selectedClientId, `${dashboardToDup.title} (Copy)`);
     // Copy over pages/widgets/markup from the source dashboard onto the freshly created one.
@@ -289,7 +314,7 @@ export function AgencyShell({ agencyId }: { agencyId: string }) {
           </>
         )}
 
-        {activeTab === "catalog" && <MetricCatalogBrowser />}
+        {activeTab === "catalog" && <MetricCatalogBrowser agencyId={agencyId} onCustomMetricsChanged={refreshCustomMetrics} />}
 
         {activeTab === "clients" && (
           <ClientManager

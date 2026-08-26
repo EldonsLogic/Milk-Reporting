@@ -1,5 +1,4 @@
 import { MetricDefinition } from "@/types";
-import { loadCustomMetrics } from "./custom-metrics";
 
 export const METRIC_CATALOG: MetricDefinition[] = [
   // ==========================================
@@ -647,11 +646,26 @@ export const METRIC_CATALOG: MetricDefinition[] = [
   },
 ];
 
+// Custom (agency-defined) metrics live in Supabase (see supabase-data.ts's
+// fetchCustomMetrics/saveCustomMetricToSupabase), but every metric lookup
+// in this file needs to stay synchronous - query-engine.ts and every
+// widget's render path call these directly, and making them async would
+// cascade into an async refactor of the entire widget system for a
+// feature that's read far more often than it's written. Instead: a
+// module-level cache, populated once per session (see setCustomMetricsCache,
+// called from AgencyShell/ClientPortalShell after fetching from Supabase)
+// and refreshed whenever a custom metric is created/deleted.
+let customMetricsCache: MetricDefinition[] = [];
+
+export function setCustomMetricsCache(metrics: MetricDefinition[]) {
+  customMetricsCache = metrics;
+}
+
 // Custom (agency-defined) metrics are merged in wherever the catalog is
 // read from, so they show up in the same picker/browser as built-in
 // metrics without every call site needing to know they exist separately.
 function getEffectiveCatalog(): MetricDefinition[] {
-  return [...METRIC_CATALOG, ...loadCustomMetrics()];
+  return [...METRIC_CATALOG, ...customMetricsCache];
 }
 
 export function getMetricById(id: string): MetricDefinition | undefined {

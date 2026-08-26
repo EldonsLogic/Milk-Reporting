@@ -3,7 +3,8 @@
 import React, { useEffect, useState } from "react";
 import { Client, Dashboard, RawDailyRecord, ContentPost } from "@/types";
 import { supabase } from "@/lib/supabase-client";
-import { fetchDashboardsForClient, fetchRecords, fetchContentPosts, saveDashboard } from "@/lib/supabase-data";
+import { fetchDashboardsForClient, fetchRecords, fetchContentPosts, fetchVisibleCustomMetrics, saveDashboard } from "@/lib/supabase-data";
+import { setCustomMetricsCache } from "@/lib/metric-catalog";
 import { DashboardBuilder } from "@/components/dashboard/DashboardBuilder";
 import { useAuth } from "@/lib/auth-context";
 import { LogOut } from "lucide-react";
@@ -56,12 +57,14 @@ export function ClientPortalShell({ clientId }: { clientId: string }) {
           logoUrl: clientRow.agencies?.logo_url || null,
         });
 
-        const [dashboards, recordList, contentList] = await Promise.all([
+        const [dashboards, recordList, contentList, customMetrics] = await Promise.all([
           fetchDashboardsForClient(clientId),
           fetchRecords(clientId),
           fetchContentPosts(clientId),
+          fetchVisibleCustomMetrics(),
         ]);
         if (!active) return;
+        setCustomMetricsCache(customMetrics);
         setDashboard(dashboards.find((d) => d.isDefault) || dashboards[0] || null);
         setRecords(recordList);
         setContentPosts(contentList);

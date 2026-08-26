@@ -289,6 +289,10 @@ export async function setDefaultDashboard(clientId: string, dashboardId: string)
   if (setError) throw setError;
 }
 
+function sanitizeGridValue(value: number, fallback: number): number {
+  return Number.isFinite(value) ? value : fallback;
+}
+
 /**
  * Persists a full dashboard (pages + sections + widgets) via a
  * delete-and-recreate strategy for pages/widgets - simpler and safer than
@@ -332,10 +336,17 @@ export async function saveDashboard(dashboard: Dashboard): Promise<void> {
         section_id: w.sectionId || null,
         widget_type: w.widgetType,
         title: w.title,
-        grid_x: w.grid.x,
-        grid_y: w.grid.y,
-        grid_w: w.grid.w,
-        grid_h: w.grid.h,
+        // A freshly-added widget's grid.y is Infinity (react-grid-layout's
+        // sentinel for "auto-place at the bottom") until the grid's own
+        // layout computation replaces it with a real number. Saving before
+        // that happens - e.g. clicking Save right after Add Widget -
+        // JSON.stringifies Infinity to null, which then violates the
+        // NOT NULL constraint on this column. Sanitize every grid value
+        // here instead of trusting the timing of that computation.
+        grid_x: sanitizeGridValue(w.grid.x, 0),
+        grid_y: sanitizeGridValue(w.grid.y, 0),
+        grid_w: sanitizeGridValue(w.grid.w, 4),
+        grid_h: sanitizeGridValue(w.grid.h, 3),
         data_config: w.dataConfig,
         display_config: w.displayConfig || {},
       }))
@@ -502,6 +513,18 @@ function mapCustomMetricRow(row: Record<string, any>): MetricDefinition {
 
 export async function fetchCustomMetrics(agencyId: string): Promise<MetricDefinition[]> {
   const { data, error } = await supabase.from("custom_metrics").select("*").eq("agency_id", agencyId);
+  if (error) throw error;
+  return (data || []).map(mapCustomMetricRow);
+}
+
+/**
+ * For the client portal, which doesn't know its own agencyId without an
+ * extra query - custom_metrics_viewer_read RLS already scopes this to
+ * whatever the signed-in client viewer is allowed to see, so no explicit
+ * agency filter is needed here.
+ */
+export async function fetchVisibleCustomMetrics(): Promise<MetricDefinition[]> {
+  const { data, error } = await supabase.from("custom_metrics").select("*");
   if (error) throw error;
   return (data || []).map(mapCustomMetricRow);
 }
