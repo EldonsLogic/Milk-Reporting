@@ -454,3 +454,71 @@ CREATE POLICY custom_metrics_viewer_read ON custom_metrics FOR SELECT
 ALTER TABLE metric_catalog ENABLE ROW LEVEL SECURITY;
 CREATE POLICY metric_catalog_read_all ON metric_catalog FOR SELECT
   USING (auth.role() = 'authenticated');
+
+-- ==================================================================
+-- 9. ATOMIC DASHBOARD SAVE
+--
+-- The dashboard editor persists its full pages/sections/widgets tree as
+-- one operation: delete the existing pages (cascades to widgets), then
+-- recreate from the in-memory state. Doing that as several separate
+-- REST calls left a real window where a second in-flight save (e.g. a
+-- double-clicked Save button) or a network error mid-sequence could
+-- leave a dashboard with its old pages deleted and only some of the
+-- new ones recreated - a real data-loss bug, not just a display glitch.
+-- Wrapping the whole thing in one plpgsql function makes it one
+-- transaction: either everything lands or nothing does. No SECURITY
+-- DEFINER clause - it runs as the calling user (Postgres's default),
+-- so every statement inside still goes through the normal
+-- dashboard_pages_admin / dashboard_widgets_admin RLS policies exactly
+-- as before.
+-- ==================================================================
+
+CREATE OR REPLACE FUNCTION save_dashboard_atomic(
+  p_dashboard_id TEXT,
+  p_title TEXT,
+  p_description TEXT,
+  p_global_date_range TEXT,
+  p_global_filters JSONB,
+  p_markup_percentage NUMERIC,
+  p_pages JSONB -- [{id, title, sortOrder, sections, widgets: [{id, sectionId, widgetType, title, grid:{x,y,w,h}, dataConfig, displayConfig}]}]
+) RETURNS VOID AS $$
+BEGIN
+  UPDATE dashboards SET
+    title = p_title,
+    description = p_description,
+    global_date_range = p_global_date_range,
+    global_filters = p_global_filters,
+    markup_percentage = p_markup_percentage,
+    updated_at = NOW()
+  WHERE id = p_dashboard_id;
+
+  DELETE FROM dashboard_pages WHERE dashboard_id = p_dashboard_id;
+
+  INSERT INTO dashboard_pages (id, dashboard_id, title, sort_order, sections)
+  SELECT
+    page->>'id',
+    p_dashboard_id,
+    page->>'title',
+    (page->>'sortOrder')::INT,
+    COALESCE(page->'sections', '[]'::jsonb)
+  FROM jsonb_array_elements(p_pages) AS page;
+
+  INSERT INTO dashboard_widgets (id, page_id, section_id, widget_type, title, grid_x, grid_y, grid_w, grid_h, data_config, display_config)
+  SELECT
+    widget->>'id',
+    page->>'id',
+    widget->>'sectionId',
+    widget->>'widgetType',
+    widget->>'title',
+    COALESCE((widget->'grid'->>'x')::INT, 0),
+    COALESCE((widget->'grid'->>'y')::INT, 0),
+    COALESCE((widget->'grid'->>'w')::INT, 4),
+    COALESCE((widget->'grid'->>'h')::INT, 3),
+    widget->'dataConfig',
+    COALESCE(widget->'displayConfig', '{}'::jsonb)
+  FROM jsonb_array_elements(p_pages) AS page,
+       jsonb_array_elements(COALESCE(page->'widgets', '[]'::jsonb)) AS widget;
+END;
+$$ LANGUAGE plpgsql;
+
+GRANT EXECUTE ON FUNCTION save_dashboard_atomic TO authenticated;

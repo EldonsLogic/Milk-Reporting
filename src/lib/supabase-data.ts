@@ -294,65 +294,51 @@ function sanitizeGridValue(value: number, fallback: number): number {
 }
 
 /**
- * Persists a full dashboard (pages + sections + widgets) via a
- * delete-and-recreate strategy for pages/widgets - simpler and safer than
- * diffing given the in-memory builder state is already the full desired
- * end state. The dashboard row itself is updated in place.
+ * Persists a full dashboard (pages + sections + widgets) in one atomic
+ * transaction via the save_dashboard_atomic Postgres function (see
+ * SUPABASE_SETUP.sql) - replaces the old delete-then-insert sequence of
+ * separate REST calls, which left a real window for a second in-flight
+ * save (e.g. a double-clicked Save button) or a network error mid-sequence
+ * to leave a dashboard with its old pages deleted and only some of the
+ * new ones recreated.
  */
 export async function saveDashboard(dashboard: Dashboard): Promise<void> {
-  const { error: dashError } = await supabase
-    .from("dashboards")
-    .update({
-      title: dashboard.title,
-      description: dashboard.description || null,
-      global_date_range: dashboard.globalDateRange,
-      global_filters: dashboard.globalFilters || {},
-      markup_percentage: dashboard.markupPercentage ?? 0,
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", dashboard.id);
-  if (dashError) throw dashError;
-
-  // Cascade delete existing pages (and their widgets, via FK ON DELETE
-  // CASCADE), then recreate from the current in-memory state.
-  const { error: deleteError } = await supabase.from("dashboard_pages").delete().eq("dashboard_id", dashboard.id);
-  if (deleteError) throw deleteError;
-
-  for (const page of dashboard.pages) {
-    const { error: pageError } = await supabase.from("dashboard_pages").insert({
+  const { error } = await supabase.rpc("save_dashboard_atomic", {
+    p_dashboard_id: dashboard.id,
+    p_title: dashboard.title,
+    p_description: dashboard.description || null,
+    p_global_date_range: dashboard.globalDateRange,
+    p_global_filters: dashboard.globalFilters || {},
+    p_markup_percentage: dashboard.markupPercentage ?? 0,
+    p_pages: dashboard.pages.map((page) => ({
       id: page.id,
-      dashboard_id: dashboard.id,
       title: page.title,
-      sort_order: page.sortOrder,
+      sortOrder: page.sortOrder,
       sections: page.sections || [],
-    });
-    if (pageError) throw pageError;
-
-    if (page.widgets.length === 0) continue;
-    const { error: widgetsError } = await supabase.from("dashboard_widgets").insert(
-      page.widgets.map((w) => ({
+      widgets: page.widgets.map((w) => ({
         id: w.id,
-        page_id: page.id,
-        section_id: w.sectionId || null,
-        widget_type: w.widgetType,
+        sectionId: w.sectionId || null,
+        widgetType: w.widgetType,
         title: w.title,
         // A freshly-added widget's grid.y is Infinity (react-grid-layout's
         // sentinel for "auto-place at the bottom") until the grid's own
         // layout computation replaces it with a real number. Saving before
         // that happens - e.g. clicking Save right after Add Widget -
-        // JSON.stringifies Infinity to null, which then violates the
-        // NOT NULL constraint on this column. Sanitize every grid value
-        // here instead of trusting the timing of that computation.
-        grid_x: sanitizeGridValue(w.grid.x, 0),
-        grid_y: sanitizeGridValue(w.grid.y, 0),
-        grid_w: sanitizeGridValue(w.grid.w, 4),
-        grid_h: sanitizeGridValue(w.grid.h, 3),
-        data_config: w.dataConfig,
-        display_config: w.displayConfig || {},
-      }))
-    );
-    if (widgetsError) throw widgetsError;
-  }
+        // JSON.stringifies Infinity to null, which the SQL side would
+        // otherwise coerce into a NOT NULL violation. Sanitize here
+        // instead of trusting the timing of that computation.
+        grid: {
+          x: sanitizeGridValue(w.grid.x, 0),
+          y: sanitizeGridValue(w.grid.y, 0),
+          w: sanitizeGridValue(w.grid.w, 4),
+          h: sanitizeGridValue(w.grid.h, 3),
+        },
+        dataConfig: w.dataConfig,
+        displayConfig: w.displayConfig || {},
+      })),
+    })),
+  });
+  if (error) throw error;
 }
 
 // ---------------------------------------------------------------------------

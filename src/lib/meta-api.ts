@@ -46,6 +46,49 @@ function sumActions(actions: { action_type: string; value: string }[] | undefine
 }
 
 // ---------------------------------------------------------------------------
+// Discovery - what does this System User token actually have access to?
+// Backs the "Add Source" picker so an admin selects a real connected
+// account/Page/IG profile instead of typing a Graph API ID from memory.
+// ---------------------------------------------------------------------------
+
+export interface DiscoveredAdAccount {
+  id: string; // "act_123..." - already in the shape paid insights calls expect
+  name: string;
+  accountStatus: number;
+}
+
+export interface DiscoveredPage {
+  id: string;
+  name: string;
+  instagramAccount: { id: string; username: string } | null;
+}
+
+// "me" resolves to the System User itself for a system-user access token,
+// so /me/adaccounts and /me/accounts return exactly what that token was
+// granted in Business Manager - no need to know the Business Manager ID.
+export async function discoverAdAccounts(): Promise<DiscoveredAdAccount[]> {
+  const rows = await graphGetAllPages("/me/adaccounts", {
+    fields: "id,name,account_id,account_status",
+    limit: "200",
+  });
+  return rows.map((r) => ({ id: r.id, name: r.name || r.account_id, accountStatus: r.account_status }));
+}
+
+export async function discoverPages(): Promise<DiscoveredPage[]> {
+  const rows = await graphGetAllPages("/me/accounts", {
+    fields: "id,name,instagram_business_account{id,username}",
+    limit: "200",
+  });
+  return rows.map((r) => ({
+    id: r.id,
+    name: r.name,
+    instagramAccount: r.instagram_business_account
+      ? { id: r.instagram_business_account.id, username: r.instagram_business_account.username }
+      : null,
+  }));
+}
+
+// ---------------------------------------------------------------------------
 // Meta Ads (paid) - act_<id>/insights
 // ---------------------------------------------------------------------------
 

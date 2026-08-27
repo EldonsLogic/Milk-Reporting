@@ -8,6 +8,7 @@ import { ClientManager } from "@/components/clients/ClientManager";
 import { DataConnectionsPanel } from "@/components/clients/DataConnectionsPanel";
 import { fetchClients, fetchDashboardsForClient, fetchRecords, fetchContentPosts, fetchCustomMetrics, saveDashboard, createDashboard, setDefaultDashboard } from "@/lib/supabase-data";
 import { setCustomMetricsCache } from "@/lib/metric-catalog";
+import { getErrorMessage } from "@/lib/errors";
 import { useAuth } from "@/lib/auth-context";
 import { RawDailyRecord, ContentPost } from "@/types";
 import {
@@ -90,7 +91,7 @@ export function AgencyShell({ agencyId }: { agencyId: string }) {
       await saveDashboard(updated);
       setDashboards((prev) => prev.map((d) => (d.id === updated.id ? updated : d)));
     } catch (err) {
-      alert(`Failed to save dashboard: ${err instanceof Error ? err.message : "Unknown error"}`);
+      alert(`Failed to save dashboard: ${getErrorMessage(err, "Unknown error")}`);
     }
   };
 
@@ -99,7 +100,7 @@ export function AgencyShell({ agencyId }: { agencyId: string }) {
     try {
       await duplicateDashboardImpl(dashboardToDup);
     } catch (err) {
-      alert(`Failed to duplicate dashboard: ${err instanceof Error ? err.message : "Unknown error"}`);
+      alert(`Failed to duplicate dashboard: ${getErrorMessage(err, "Unknown error")}`);
     }
   };
 

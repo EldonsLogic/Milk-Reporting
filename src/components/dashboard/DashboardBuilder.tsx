@@ -36,7 +36,7 @@ interface Props {
   dashboard: Dashboard;
   records: RawDailyRecord[];
   contentPosts?: ContentPost[];
-  onSaveDashboard: (updatedDashboard: Dashboard) => void;
+  onSaveDashboard: (updatedDashboard: Dashboard) => Promise<void>;
   onDuplicateDashboard: (dashboard: Dashboard) => void;
   userRole?: "agency_admin" | "client_viewer";
 }
@@ -56,6 +56,7 @@ export function DashboardBuilder({
     dashboard.globalDateRange || "last_30_days"
   );
   const [editingWidget, setEditingWidget] = useState<WidgetConfig | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
   // null = Add Widget modal closed; undefined = adding to the ungrouped
   // area; a string = adding into that section's id
   const [addWidgetTargetSection, setAddWidgetTargetSection] = useState<string | undefined | null>(null);
@@ -396,11 +397,27 @@ export function DashboardBuilder({
 
               {/* Save Dashboard Layout */}
               <button
-                onClick={() => onSaveDashboard(currentDashboard)}
-                className="px-3 py-1.5 font-bold bg-black text-milk-yellow border border-black hover:bg-neutral-900 flex items-center space-x-1 shadow-crisp-sm"
+                onClick={async () => {
+                  // Without this guard, a second click while the first
+                  // save's request is still in flight fires a second
+                  // concurrent delete-then-recreate against the same
+                  // deterministic page/widget IDs - the two can interleave
+                  // into a duplicate-key error, or one call's insert
+                  // landing after the other's delete, silently losing
+                  // whichever widgets only the loser re-inserted.
+                  if (isSaving) return;
+                  setIsSaving(true);
+                  try {
+                    await onSaveDashboard(currentDashboard);
+                  } finally {
+                    setIsSaving(false);
+                  }
+                }}
+                disabled={isSaving}
+                className="px-3 py-1.5 font-bold bg-black text-milk-yellow border border-black hover:bg-neutral-900 flex items-center space-x-1 shadow-crisp-sm disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <Save className="w-3.5 h-3.5" />
-                <span>Save</span>
+                <span>{isSaving ? "Saving..." : "Save"}</span>
               </button>
             </>
           )}

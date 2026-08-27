@@ -3,6 +3,7 @@
 import React, { useState } from "react";
 import { Client } from "@/types";
 import { createClient, deleteClient, updateClient } from "@/lib/supabase-data";
+import { getErrorMessage } from "@/lib/errors";
 import { Plus, Trash2, LayoutDashboard, Pencil, KeyRound } from "lucide-react";
 import { ClientLoginManager } from "./ClientLoginManager";
 
@@ -45,7 +46,7 @@ export function ClientManager({ agencyId, clients, onClientsChanged, onSelectCli
       onClientsChanged();
       onSelectClient(client);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create client");
+      setError(getErrorMessage(err, "Failed to create client"));
     } finally {
       setBusy(false);
     }
@@ -71,7 +72,7 @@ export function ClientManager({ agencyId, clients, onClientsChanged, onSelectCli
       setEditingClient(null);
       onClientsChanged();
     } catch (err) {
-      alert(err instanceof Error ? err.message : "Failed to update client");
+      alert(getErrorMessage(err, "Failed to update client"));
     } finally {
       setBusy(false);
     }
@@ -85,7 +86,7 @@ export function ClientManager({ agencyId, clients, onClientsChanged, onSelectCli
       await deleteClient(client.id);
       onClientsChanged();
     } catch (err) {
-      alert(err instanceof Error ? err.message : "Failed to delete client");
+      alert(getErrorMessage(err, "Failed to delete client"));
     }
   };
 
@@ -96,7 +97,7 @@ export function ClientManager({ agencyId, clients, onClientsChanged, onSelectCli
       await onCreateDashboard(client, title);
       onSelectClient(client);
     } catch (err) {
-      alert(err instanceof Error ? err.message : "Failed to create dashboard");
+      alert(getErrorMessage(err, "Failed to create dashboard"));
     }
   };
 

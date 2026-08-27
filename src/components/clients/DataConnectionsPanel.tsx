@@ -11,6 +11,7 @@ import {
   updateConnectionScope,
   deleteConnection,
 } from "@/lib/supabase-data";
+import { getErrorMessage } from "@/lib/errors";
 import { Plus, Trash2, Filter, RefreshCw, Loader2 } from "lucide-react";
 
 const REAL_INGESTION_PLATFORMS: Platform[] = ["meta", "facebook_page", "instagram"];
@@ -62,6 +63,18 @@ function textToScope(text: string): string[] {
     .filter(Boolean);
 }
 
+interface DiscoveryOption {
+  id: string;
+  label: string;
+  name: string;
+}
+
+interface DiscoveryData {
+  adAccounts: DiscoveryOption[];
+  pages: DiscoveryOption[];
+  instagramAccounts: DiscoveryOption[];
+}
+
 export function DataConnectionsPanel({ client, onChanged }: Props) {
   const [connections, setConnections] = useState<ConnectionRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -73,6 +86,33 @@ export function DataConnectionsPanel({ client, onChanged }: Props) {
   const [scopeDraft, setScopeDraft] = useState<Record<keyof ScopeFilters, string>>({} as any);
   const [syncingId, setSyncingId] = useState<string | null>(null);
   const [syncMessages, setSyncMessages] = useState<Record<string, string>>({});
+  const [discovery, setDiscovery] = useState<DiscoveryData | null>(null);
+  const [discoveryLoading, setDiscoveryLoading] = useState(false);
+  const [discoveryError, setDiscoveryError] = useState<string | null>(null);
+  const [manualEntry, setManualEntry] = useState(false);
+
+  const loadDiscovery = async () => {
+    setDiscoveryLoading(true);
+    setDiscoveryError(null);
+    try {
+      const res = await authedFetch("/api/meta/discover");
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || "Failed to load connected Meta accounts");
+      setDiscovery({
+        adAccounts: (json.adAccounts || []).map((a: any) => ({ id: a.id, name: a.name, label: `${a.name} (${a.id})` })),
+        pages: (json.pages || []).map((p: any) => ({ id: p.id, name: p.name, label: `${p.name} (${p.id})` })),
+        instagramAccounts: (json.instagramAccounts || []).map((i: any) => ({
+          id: i.id,
+          name: `@${i.username}`,
+          label: `@${i.username} — via ${i.pageName} (${i.id})`,
+        })),
+      });
+    } catch (err) {
+      setDiscoveryError(getErrorMessage(err, "Failed to load connected Meta accounts"));
+    } finally {
+      setDiscoveryLoading(false);
+    }
+  };
 
   const load = async () => {
     setLoading(true);
@@ -87,6 +127,13 @@ export function DataConnectionsPanel({ client, onChanged }: Props) {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client.id]);
+
+  useEffect(() => {
+    if (showAddForm && REAL_INGESTION_PLATFORMS.includes(newPlatform) && !discovery && !discoveryLoading) {
+      loadDiscovery();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showAddForm, newPlatform]);
 
   const handleAddConnection = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -133,7 +180,7 @@ export function DataConnectionsPanel({ client, onChanged }: Props) {
         setSyncMessages((prev) => ({ ...prev, [connectionId]: "No matching connection found." }));
       }
     } catch (err) {
-      setSyncMessages((prev) => ({ ...prev, [connectionId]: err instanceof Error ? err.message : "Sync failed" }));
+      setSyncMessages((prev) => ({ ...prev, [connectionId]: getErrorMessage(err, "Sync failed") }));
     } finally {
       setSyncingId(null);
       await load();
@@ -156,6 +203,22 @@ export function DataConnectionsPanel({ client, onChanged }: Props) {
     await updateConnectionScope(connectionId, filters);
     setExpandedId(null);
     await load();
+  };
+
+  const discoveryOptions: DiscoveryOption[] =
+    newPlatform === "meta"
+      ? discovery?.adAccounts || []
+      : newPlatform === "facebook_page"
+      ? discovery?.pages || []
+      : newPlatform === "instagram"
+      ? discovery?.instagramAccounts || []
+      : [];
+  const showPicker = REAL_INGESTION_PLATFORMS.includes(newPlatform) && !manualEntry;
+
+  const handlePickAccount = (id: string) => {
+    setNewExternalId(id);
+    const option = discoveryOptions.find((o) => o.id === id);
+    if (option) setNewAccountName(`${client.name} — ${option.name}`);
   };
 
   return (
@@ -184,7 +247,10 @@ export function DataConnectionsPanel({ client, onChanged }: Props) {
               <label className="block font-bold uppercase text-neutral-800 mb-1">Platform</label>
               <select
                 value={newPlatform}
-                onChange={(e) => setNewPlatform(e.target.value as Platform)}
+                onChange={(e) => {
+                  setNewPlatform(e.target.value as Platform);
+                  setNewExternalId("");
+                }}
                 className="w-full p-2 border border-neutral-300 focus:border-black bg-milk-bg"
               >
                 {PLATFORM_OPTIONS.map((p) => (
@@ -195,17 +261,60 @@ export function DataConnectionsPanel({ client, onChanged }: Props) {
               </select>
             </div>
             <div>
-              <label className="block font-bold uppercase text-neutral-800 mb-1">External Account ID</label>
-              <input
-                type="text"
-                required
-                value={newExternalId}
-                onChange={(e) => setNewExternalId(e.target.value)}
-                placeholder="act_1234567"
-                className="w-full p-2 border border-neutral-300 focus:border-black bg-milk-bg font-mono text-xs"
-              />
+              <label className="block font-bold uppercase text-neutral-800 mb-1">
+                {showPicker ? "Connected Account" : "External Account ID"}
+              </label>
+              {showPicker ? (
+                discoveryLoading ? (
+                  <div className="w-full p-2 border border-neutral-300 bg-milk-bg text-neutral-500 flex items-center gap-1.5">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    Loading from Meta...
+                  </div>
+                ) : discoveryError ? (
+                  <div className="text-red-600">
+                    {discoveryError}
+                    <button type="button" onClick={loadDiscovery} className="ml-2 underline hover:no-underline">
+                      Retry
+                    </button>
+                  </div>
+                ) : (
+                  <select
+                    required
+                    value={newExternalId}
+                    onChange={(e) => handlePickAccount(e.target.value)}
+                    className="w-full p-2 border border-neutral-300 focus:border-black bg-milk-bg"
+                  >
+                    <option value="">
+                      {discoveryOptions.length === 0 ? "No accounts found for this token" : "Select an account..."}
+                    </option>
+                    {discoveryOptions.map((o) => (
+                      <option key={o.id} value={o.id}>
+                        {o.label}
+                      </option>
+                    ))}
+                  </select>
+                )
+              ) : (
+                <input
+                  type="text"
+                  required
+                  value={newExternalId}
+                  onChange={(e) => setNewExternalId(e.target.value)}
+                  placeholder="act_1234567"
+                  className="w-full p-2 border border-neutral-300 focus:border-black bg-milk-bg font-mono text-xs"
+                />
+              )}
             </div>
           </div>
+          {REAL_INGESTION_PLATFORMS.includes(newPlatform) && (
+            <button
+              type="button"
+              onClick={() => setManualEntry((v) => !v)}
+              className="text-neutral-500 hover:text-black underline hover:no-underline"
+            >
+              {manualEntry ? "Pick from connected accounts instead" : "Enter an ID manually instead"}
+            </button>
+          )}
           <div>
             <label className="block font-bold uppercase text-neutral-800 mb-1">Account Name</label>
             <input
