@@ -6,11 +6,24 @@ import { DashboardBuilder } from "@/components/dashboard/DashboardBuilder";
 import { MetricCatalogBrowser } from "@/components/data-catalog/MetricCatalogBrowser";
 import { ClientManager } from "@/components/clients/ClientManager";
 import { DataConnectionsPanel } from "@/components/clients/DataConnectionsPanel";
-import { fetchClients, fetchDashboardsForClient, fetchRecords, fetchContentPosts, fetchCustomMetrics, saveDashboard, createDashboard, setDefaultDashboard } from "@/lib/supabase-data";
+import {
+  fetchClients,
+  fetchDashboardsForClient,
+  fetchRecords,
+  fetchContentPosts,
+  fetchCustomMetrics,
+  fetchAnnotations,
+  saveDashboard,
+  createDashboard,
+  setDefaultDashboard,
+  saveDashboardAsTemplate,
+  Annotation,
+} from "@/lib/supabase-data";
 import { setCustomMetricsCache } from "@/lib/metric-catalog";
+import { getDateBounds, toDateStr } from "@/lib/query-engine";
 import { getErrorMessage } from "@/lib/errors";
 import { useAuth } from "@/lib/auth-context";
-import { RawDailyRecord, ContentPost } from "@/types";
+import { RawDailyRecord, ContentPost, DateRangePreset, CustomDateRange } from "@/types";
 import {
   LayoutDashboard,
   Database,
@@ -20,6 +33,16 @@ import {
   Shield,
   LogOut,
 } from "lucide-react";
+
+/**
+ * How much history to fetch for a given view. Records are now fetched
+ * date-bounded rather than "everything this client has ever accumulated",
+ * so the window has to widen when the user picks a longer range.
+ */
+function windowForPreset(preset: DateRangePreset, bounds?: CustomDateRange) {
+  const { startDate, endDate } = getDateBounds(preset, bounds);
+  return { start: toDateStr(startDate), end: toDateStr(endDate) };
+}
 
 export function AgencyShell({ agencyId }: { agencyId: string }) {
   const { signOut } = useAuth();
@@ -34,6 +57,10 @@ export function AgencyShell({ agencyId }: { agencyId: string }) {
   const [selectedDashboardId, setSelectedDashboardId] = useState<string | null>(null);
   const [records, setRecords] = useState<RawDailyRecord[]>([]);
   const [contentPosts, setContentPosts] = useState<ContentPost[]>([]);
+  const [annotations, setAnnotations] = useState<Annotation[]>([]);
+  // The window currently fetched from the database, widened whenever the
+  // user picks a longer date range than what's already loaded.
+  const [dataWindow, setDataWindow] = useState(() => windowForPreset("last_30_days"));
 
   const selectedClient = clients.find((c) => c.id === selectedClientId) || null;
 
@@ -60,26 +87,102 @@ export function AgencyShell({ agencyId }: { agencyId: string }) {
     refreshCustomMetrics();
   }, [refreshCustomMetrics]);
 
-  const loadClientWorkspace = useCallback(async (clientId: string) => {
-    setDashboardsLoading(true);
-    try {
-      const [dashList, recordList, contentList] = await Promise.all([
-        fetchDashboardsForClient(clientId),
-        fetchRecords(clientId),
-        fetchContentPosts(clientId),
-      ]);
-      setDashboards(dashList);
-      setSelectedDashboardId(dashList[0]?.id || null);
-      setRecords(recordList);
-      setContentPosts(contentList);
-    } finally {
-      setDashboardsLoading(false);
-    }
-  }, []);
+  const loadClientWorkspace = useCallback(
+    async (clientId: string, window: { start: string; end: string }) => {
+      setDashboardsLoading(true);
+      try {
+        const [dashList, recordList, contentList, annotationList] = await Promise.all([
+          fetchDashboardsForClient(clientId),
+          fetchRecords(clientId, window),
+          fetchContentPosts(clientId, window),
+          fetchAnnotations(clientId),
+        ]);
+        setDashboards(dashList);
+        setSelectedDashboardId((prev) =>
+          prev && dashList.some((d) => d.id === prev) ? prev : dashList[0]?.id || null
+        );
+        setRecords(recordList);
+        setContentPosts(contentList);
+        setAnnotations(annotationList);
+      } finally {
+        setDashboardsLoading(false);
+      }
+    },
+    []
+  );
 
   useEffect(() => {
-    if (selectedClientId) loadClientWorkspace(selectedClientId);
+    if (selectedClientId) loadClientWorkspace(selectedClientId, dataWindow);
+    // dataWindow is deliberately NOT a dependency here - widening the window
+    // must not re-fetch dashboards, which would replace the objects
+    // DashboardBuilder keys off and silently discard any unsaved widget edits
+    // in progress. The records-only effect below handles window changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedClientId, loadClientWorkspace]);
+
+  // Records and posts are the only things the date window affects, so they
+  // refresh on their own without touching dashboard state.
+  const isFirstWindowLoad = React.useRef(true);
+  useEffect(() => {
+    if (!selectedClientId) return;
+    if (isFirstWindowLoad.current) {
+      isFirstWindowLoad.current = false;
+      return; // the workspace load above already fetched this window
+    }
+    let active = true;
+    (async () => {
+      const [recordList, contentList] = await Promise.all([
+        fetchRecords(selectedClientId, dataWindow),
+        fetchContentPosts(selectedClientId, dataWindow),
+      ]);
+      if (!active) return;
+      setRecords(recordList);
+      setContentPosts(contentList);
+    })();
+    return () => {
+      active = false;
+    };
+  }, [selectedClientId, dataWindow]);
+
+  const refreshAnnotations = useCallback(async () => {
+    if (selectedClientId) setAnnotations(await fetchAnnotations(selectedClientId));
+  }, [selectedClientId]);
+
+  /**
+   * Widens the fetched window when the dashboard's date range changes.
+   * Only refetches when the new range reaches further back than what's
+   * already loaded - switching from 90 days to 7 needs no round trip.
+   */
+  const handleDateRangeChange = useCallback(
+    (preset: DateRangePreset, bounds?: CustomDateRange) => {
+      const next = windowForPreset(preset, bounds);
+      setDataWindow((prev) =>
+        next.start < prev.start || next.end > prev.end
+          ? { start: next.start < prev.start ? next.start : prev.start, end: next.end > prev.end ? next.end : prev.end }
+          : prev
+      );
+    },
+    []
+  );
+
+  const handleSaveAsTemplate = async (dashboardToSave: Dashboard) => {
+    const name = prompt("Template name:", dashboardToSave.title);
+    if (!name) return;
+    const category = prompt("Category (e.g. Paid Media, Social Media, Executive):", "Full Overview");
+    if (!category) return;
+    try {
+      await saveDashboardAsTemplate({
+        agencyId,
+        name,
+        category,
+        description: `Saved from "${dashboardToSave.title}".`,
+        dashboard: dashboardToSave,
+      });
+      alert(`Template "${name}" saved. You can apply it when creating a dashboard for any client.`);
+    } catch (err) {
+      alert(`Failed to save template: ${getErrorMessage(err, "Unknown error")}`);
+    }
+  };
 
   const activeDashboard = dashboards.find((d) => d.id === selectedDashboardId) || dashboards[0] || null;
 
@@ -288,7 +391,7 @@ export function AgencyShell({ agencyId }: { agencyId: string }) {
                         onClick={async () => {
                           if (!selectedClientId) return;
                           await setDefaultDashboard(selectedClientId, activeDashboard.id);
-                          await loadClientWorkspace(selectedClientId);
+                          await loadClientWorkspace(selectedClientId, dataWindow);
                         }}
                         className="px-2 py-1 border border-neutral-300 hover:border-black font-bold"
                         title="Make this the dashboard the client sees when they log in"
@@ -306,8 +409,14 @@ export function AgencyShell({ agencyId }: { agencyId: string }) {
                   dashboard={activeDashboard}
                   records={records}
                   contentPosts={contentPosts}
+                  annotations={annotations}
+                  clientId={selectedClientId || undefined}
+                  clientName={selectedClient?.name}
                   onSaveDashboard={handleSaveDashboard}
                   onDuplicateDashboard={handleDuplicateDashboard}
+                  onSaveAsTemplate={handleSaveAsTemplate}
+                  onAnnotationsChanged={refreshAnnotations}
+                  onDateRangeChange={handleDateRangeChange}
                   userRole={userRole}
                 />
               </>
@@ -329,7 +438,7 @@ export function AgencyShell({ agencyId }: { agencyId: string }) {
             onCreateDashboard={async (client, title) => {
               const created = await createDashboard(client.id, title);
               if (client.id === selectedClientId) {
-                await loadClientWorkspace(client.id);
+                await loadClientWorkspace(client.id, dataWindow);
                 setSelectedDashboardId(created.id);
               }
             }}

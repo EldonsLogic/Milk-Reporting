@@ -1,8 +1,17 @@
 "use client";
 
 import React from "react";
-import { WidgetConfig, RawDailyRecord, ContentPost, DateRangePreset } from "@/types";
-import { queryWidgetData, queryContentPosts, formatMetricValue } from "@/lib/query-engine";
+import { WidgetConfig, RawDailyRecord, ContentPost, BreakdownDimension } from "@/types";
+import {
+  queryWidgetData,
+  queryContentPosts,
+  queryBreakdown,
+  queryBreakdownOverTime,
+  formatMetricValue,
+  QueryContext,
+  BreakdownRow,
+} from "@/lib/query-engine";
+import { Annotation } from "@/lib/supabase-data";
 import {
   ResponsiveContainer,
   LineChart,
@@ -19,25 +28,56 @@ import {
   Tooltip,
   CartesianGrid,
   Legend,
+  ReferenceLine,
 } from "recharts";
-import { ArrowUpRight, ArrowDownRight, Sparkles, AlertCircle, ImageOff, ExternalLink, Heart, MessageCircle, Share2 } from "lucide-react";
+import { ArrowUpRight, ArrowDownRight, ImageOff, ExternalLink, Heart, MessageCircle, Share2 } from "lucide-react";
 
 interface Props {
   widget: WidgetConfig;
   records: RawDailyRecord[];
   contentPosts?: ContentPost[];
-  globalDateRange: DateRangePreset;
+  ctx: QueryContext;
+  annotations?: Annotation[];
   onEdit?: (widget: WidgetConfig) => void;
   onDelete?: (widgetId: string) => void;
   isEditMode?: boolean;
-  /** agency markup %, only ever passed for the client-facing perspective */
-  markupPercentage?: number;
 }
 
 const MILK_PALETTE = ["#FFE600", "#111111", "#666666", "#999999", "#CCCCCC"];
 // Distinct-enough series colors for multi-metric line/area charts - black
 // first (primary), yellow second (brand accent), then grays.
 const MILK_LINE_PALETTE = ["#111111", "#EAB308", "#666666", "#999999"];
+// Stacked segments need more mutually distinguishable steps than the
+// two-or-three-series line palette provides, while staying in the
+// black/yellow/grey editorial range rather than introducing new hues.
+const MILK_SERIES_PALETTE = ["#111111", "#FFE600", "#4A4640", "#B8B2A6", "#7A756C", "#E2E2DF"];
+
+const TOOLTIP_STYLE = {
+  backgroundColor: "#111111",
+  color: "#FFFFFF",
+  borderRadius: "0px",
+  border: "none",
+  fontSize: "11px",
+  fontFamily: "monospace",
+} as const;
+
+const DIMENSION_LABELS: Record<string, string> = {
+  date: "Date",
+  platform: "Platform",
+  campaign: "Campaign",
+  adset: "Ad Set",
+  ad: "Ad",
+  objective: "Objective",
+  account: "Account",
+};
+
+function EmptyBody({ message }: { message: string }) {
+  return (
+    <div className="flex items-center justify-center h-full text-center text-xs font-mono text-neutral-400 py-4 px-3">
+      {message}
+    </div>
+  );
+}
 
 // Recharts wants one data array with a key per series, but queryWidgetData
 // returns one AggregatedQueryResult (with its own trendData) per metric -
@@ -55,21 +95,32 @@ function mergeTrendData(results: ReturnType<typeof queryWidgetData>) {
   return Array.from(byDate.values());
 }
 
+/** Widget types whose body is a per-entity breakdown rather than an aggregate. */
+const BREAKDOWN_WIDGETS = new Set(["campaign_table", "ranking", "heatmap"]);
+
 export function WidgetRenderer({
   widget,
   records,
   contentPosts = [],
-  globalDateRange,
+  ctx,
+  annotations = [],
   onEdit,
   onDelete,
   isEditMode,
-  markupPercentage,
 }: Props) {
-  const dataResults = queryWidgetData(records, widget.dataConfig, globalDateRange, markupPercentage);
+  const { widgetType, dataConfig } = widget;
+  const dimension: BreakdownDimension = dataConfig.breakdown || "campaign";
+
+  const dataResults = queryWidgetData(records, dataConfig, ctx);
   const contentResults =
-    widget.widgetType === "content_table"
-      ? queryContentPosts(contentPosts, widget.dataConfig, globalDateRange)
-      : [];
+    widgetType === "content_table" ? queryContentPosts(contentPosts, dataConfig, ctx) : [];
+  const breakdownRows = BREAKDOWN_WIDGETS.has(widgetType)
+    ? queryBreakdown(records, dataConfig, ctx, dimension)
+    : [];
+  const stacked =
+    widgetType === "stacked_bar"
+      ? queryBreakdownOverTime(records, dataConfig, ctx, dataConfig.breakdown || "platform")
+      : null;
 
   return (
     <div className="h-full w-full bg-white border border-neutral-200 flex flex-col justify-between p-4 transition-all hover:border-neutral-400 group relative">
@@ -95,21 +146,20 @@ export function WidgetRenderer({
       )}
 
       {/* Widget Header */}
-      {widget.displayConfig?.showTitle !== false && (
+      {widget.displayConfig?.showTitle !== false && widgetType !== "image_logo" && (
         <div className="mb-2 flex items-center justify-between border-b border-neutral-100 pb-2">
           <h4 className="text-xs font-mono uppercase tracking-wider font-bold text-neutral-800 flex items-center gap-1.5">
-            {widget.widgetType === "ai_insight" && <Sparkles className="w-3.5 h-3.5 text-black fill-milk-yellow" />}
             {widget.title}
           </h4>
           <span className="text-[10px] font-mono text-neutral-500 uppercase px-1.5 py-0.5 bg-neutral-100 border border-neutral-200">
-            {widget.dataConfig.platform}
+            {BREAKDOWN_WIDGETS.has(widgetType) ? dimension : widget.dataConfig.platform}
           </span>
         </div>
       )}
 
       {/* Widget Content Body */}
       <div className="flex-1 w-full overflow-hidden flex flex-col justify-center">
-        {renderWidgetBody(widget, dataResults, contentResults)}
+        {renderWidgetBody(widget, dataResults, contentResults, breakdownRows, stacked, annotations)}
       </div>
 
       {/* Optional Note Footer */}
@@ -122,16 +172,52 @@ export function WidgetRenderer({
   );
 }
 
+/**
+ * Annotation markers on a time-series chart. Chart x-values are "MM-DD"
+ * (trendData slices the year off), so annotation dates are matched in the
+ * same shape - and only those inside the plotted window are drawn, since a
+ * ReferenceLine at an x-value the axis doesn't contain renders at the edge
+ * and reads as a real event on the wrong day.
+ */
+function annotationMarkers(annotations: Annotation[], plottedDates: string[]) {
+  if (annotations.length === 0 || plottedDates.length === 0) return null;
+  const visible = plottedDates.length;
+  return annotations
+    .map((a) => ({ annotation: a, x: a.date.slice(5) }))
+    .filter(({ x }) => plottedDates.includes(x))
+    .slice(0, visible)
+    .map(({ annotation, x }) => (
+      <ReferenceLine
+        key={annotation.id}
+        x={x}
+        stroke="#B3121B"
+        strokeDasharray="3 3"
+        strokeWidth={1.5}
+        label={{
+          value: annotation.title,
+          position: "top",
+          fontSize: 9,
+          fill: "#B3121B",
+          fontFamily: "monospace",
+        }}
+      />
+    ));
+}
+
 function renderWidgetBody(
   widget: WidgetConfig,
   results: ReturnType<typeof queryWidgetData>,
-  contentResults: ContentPost[]
+  contentResults: ContentPost[],
+  breakdownRows: BreakdownRow[],
+  stacked: { data: Record<string, string | number>[]; series: string[] } | null,
+  annotations: Annotation[]
 ) {
   const primaryResult = results[0];
 
   if (
     !primaryResult &&
     widget.widgetType !== "text" &&
+    widget.widgetType !== "image_logo" &&
     widget.widgetType !== "ai_insight" &&
     widget.widgetType !== "content_table"
   ) {
@@ -168,7 +254,9 @@ function renderWidgetBody(
                 )}
                 {primaryResult.formattedChange}
               </span>
-              <span className="text-[10px] text-neutral-400 font-normal ml-2 uppercase">vs prev period</span>
+              <span className="text-[10px] text-neutral-400 font-normal ml-2 uppercase">
+                {primaryResult.comparisonLabel}
+              </span>
             </div>
           )}
         </div>
@@ -209,6 +297,7 @@ function renderWidgetBody(
                 }}
               />
               {results.length > 1 && <Legend wrapperStyle={{ fontSize: "10px", fontFamily: "monospace" }} />}
+              {annotationMarkers(annotations, chartData.map((d) => String(d.date)))}
               {results.map((res, i) => (
                 <Line
                   key={res.metricId}
@@ -255,6 +344,7 @@ function renderWidgetBody(
                 }}
               />
               {results.length > 1 && <Legend wrapperStyle={{ fontSize: "10px", fontFamily: "monospace" }} />}
+              {annotationMarkers(annotations, chartData.map((d) => String(d.date)))}
               {results.map((res, i) => (
                 <Area
                   key={res.metricId}
@@ -343,29 +433,70 @@ function renderWidgetBody(
       );
     }
 
+    case "stacked_bar": {
+      if (!stacked || stacked.series.length === 0) {
+        return <EmptyBody message="No data to break down for this dimension and date range." />;
+      }
+      return (
+        <div className="h-full w-full min-h-[140px] pt-1">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={stacked.data} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="2 2" stroke="#E2E2DF" vertical={false} />
+              <XAxis dataKey="date" tick={{ fontSize: 10, fill: "#666" }} tickLine={false} />
+              <YAxis tick={{ fontSize: 10, fill: "#666" }} tickLine={false} />
+              <Tooltip contentStyle={TOOLTIP_STYLE} />
+              <Legend wrapperStyle={{ fontSize: "10px", fontFamily: "monospace" }} />
+              {stacked.series.map((key, i) => (
+                <Bar
+                  key={key}
+                  dataKey={key}
+                  stackId="a"
+                  fill={MILK_SERIES_PALETTE[i % MILK_SERIES_PALETTE.length]}
+                  isAnimationActive={false}
+                />
+              ))}
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      );
+    }
+
     case "ranking": {
+      if (breakdownRows.length === 0) {
+        return <EmptyBody message="No entities to rank for this dimension and date range." />;
+      }
+      const metricId = widget.dataConfig.metricIds[0] || "spend";
+      const topValue = breakdownRows[0]?.values[metricId] || 0;
       return (
         <div className="overflow-y-auto h-full text-xs font-mono">
-          <div className="border-b border-black bg-neutral-100 font-bold p-1.5 flex justify-between">
+          <div className="border-b border-black bg-neutral-100 font-bold p-1.5 flex justify-between sticky top-0">
             <span>Rank / Entity</span>
-            <span>{primaryResult.displayName}</span>
+            <span>{primaryResult?.displayName}</span>
           </div>
           <div className="divide-y divide-neutral-100">
-            {[
-              { rank: 1, name: "Summer Glow Video Ad", val: primaryResult.formattedValue },
-              { rank: 2, name: "Advantage+ Shopping Campaign", val: "78.4%" },
-              { rank: 3, name: "Reels Viral Engagement #4", val: "62.1%" },
-              { rank: 4, name: "Brand Reach Retargeting", val: "45.0%" },
-              { rank: 5, name: "Organic Community Reel", val: "31.2%" },
-            ].map((item) => (
-              <div key={item.rank} className="p-1.5 flex justify-between items-center hover:bg-milk-subtle">
-                <div className="flex items-center space-x-2">
-                  <span className="w-4 h-4 bg-black text-milk-yellow font-bold text-[10px] flex items-center justify-center">
-                    {item.rank}
-                  </span>
-                  <span className="font-sans font-semibold text-neutral-800 truncate max-w-[140px]">{item.name}</span>
+            {breakdownRows.slice(0, 25).map((row, i) => (
+              <div key={row.key} className="p-1.5 hover:bg-milk-subtle">
+                <div className="flex justify-between items-center gap-2">
+                  <div className="flex items-center space-x-2 min-w-0">
+                    <span className="w-4 h-4 shrink-0 bg-black text-milk-yellow font-bold text-[10px] flex items-center justify-center">
+                      {i + 1}
+                    </span>
+                    <span className="font-sans font-semibold text-neutral-800 truncate" title={row.label}>
+                      {row.label}
+                    </span>
+                  </div>
+                  <span className="font-bold text-black shrink-0 tabular-nums">{row.formatted[metricId]}</span>
                 </div>
-                <span className="font-bold text-black">{item.val}</span>
+                {/* Bar is scaled against the leader, not the total, so the
+                    shape stays readable when one entity dominates. */}
+                {topValue > 0 && (
+                  <div className="mt-1 h-1 bg-neutral-100">
+                    <div
+                      className="h-full bg-milk-yellow border-r border-black"
+                      style={{ width: `${Math.max(2, ((row.values[metricId] || 0) / topValue) * 100)}%` }}
+                    />
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -373,8 +504,80 @@ function renderWidgetBody(
       );
     }
 
-    case "table":
+    case "heatmap": {
+      if (breakdownRows.length === 0) {
+        return <EmptyBody message="No data to plot for this dimension and date range." />;
+      }
+      const metricId = widget.dataConfig.metricIds[0] || "spend";
+      const max = Math.max(...breakdownRows.map((r) => r.values[metricId] || 0), 0);
+      return (
+        <div className="h-full overflow-y-auto grid grid-cols-2 sm:grid-cols-3 gap-1 content-start">
+          {breakdownRows.slice(0, 24).map((row) => {
+            const value = row.values[metricId] || 0;
+            const intensity = max > 0 ? value / max : 0;
+            // Yellow tile whose opacity encodes magnitude; text flips to
+            // black only once the ground is solid enough to carry it.
+            return (
+              <div
+                key={row.key}
+                title={`${row.label}: ${row.formatted[metricId]}`}
+                className="border border-neutral-200 p-1.5 flex flex-col justify-between min-h-[52px]"
+                style={{ backgroundColor: `rgba(255, 230, 0, ${0.12 + intensity * 0.88})` }}
+              >
+                <span className="text-[9px] font-sans text-neutral-800 leading-tight line-clamp-2">{row.label}</span>
+                <span className="text-[11px] font-mono font-bold text-black tabular-nums">
+                  {row.formatted[metricId]}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      );
+    }
+
     case "campaign_table": {
+      if (breakdownRows.length === 0) {
+        return <EmptyBody message="No campaigns with data in this date range." />;
+      }
+      const metricIds = widget.dataConfig.metricIds.length ? widget.dataConfig.metricIds : ["spend"];
+      const dimensionLabel = DIMENSION_LABELS[widget.dataConfig.breakdown || "campaign"];
+      return (
+        <div className="overflow-auto h-full text-xs font-mono">
+          <table className="w-full text-left border-collapse">
+            <thead className="sticky top-0">
+              <tr className="border-b border-black bg-neutral-100 font-bold">
+                <th className="py-1.5 px-2">{dimensionLabel}</th>
+                {metricIds.map((id) => (
+                  <th key={id} className="py-1.5 px-2 text-right whitespace-nowrap">
+                    {results.find((r) => r.metricId === id)?.displayName || id}
+                  </th>
+                ))}
+                <th className="py-1.5 px-2 text-right">Share</th>
+              </tr>
+            </thead>
+            <tbody>
+              {breakdownRows.map((row) => (
+                <tr key={row.key} className="border-b border-neutral-100 hover:bg-milk-subtle">
+                  <td className="py-1.5 px-2 font-sans font-semibold text-neutral-800 max-w-[200px] truncate" title={row.label}>
+                    {row.label}
+                  </td>
+                  {metricIds.map((id) => (
+                    <td key={id} className="py-1.5 px-2 text-right font-bold text-black tabular-nums">
+                      {row.formatted[id]}
+                    </td>
+                  ))}
+                  <td className="py-1.5 px-2 text-right text-neutral-500 tabular-nums">
+                    {row.sharePercentage > 0 ? `${row.sharePercentage.toFixed(1)}%` : "—"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      );
+    }
+
+    case "table": {
       return (
         <div className="overflow-x-auto h-full text-xs font-mono">
           <table className="w-full text-left border-collapse">
@@ -389,8 +592,8 @@ function renderWidgetBody(
               {results.map((res) => (
                 <tr key={res.metricId} className="border-b border-neutral-100 hover:bg-milk-subtle">
                   <td className="py-1.5 px-2 font-semibold text-neutral-800">{res.displayName}</td>
-                  <td className="py-1.5 px-2 text-right font-bold text-black">{res.formattedValue}</td>
-                  <td className="py-1.5 px-2 text-right">
+                  <td className="py-1.5 px-2 text-right font-bold text-black tabular-nums">{res.formattedValue}</td>
+                  <td className="py-1.5 px-2 text-right tabular-nums">
                     {res.formattedChange ? (
                       <span className={(res.changePercentage || 0) >= 0 ? "text-green-700 font-bold" : "text-neutral-500"}>
                         {res.formattedChange}
@@ -408,34 +611,75 @@ function renderWidgetBody(
     }
 
     case "ai_insight": {
+      // Left in place so existing widgets of this type keep rendering, but
+      // reduced to the one line that was ever real. The "Interpretation" and
+      // "Recommendation" blocks that used to sit here were hardcoded strings,
+      // identical for every metric, client and date range - a fabricated
+      // conclusion under a label implying it was measured. Deliberately not
+      // rebuilt here; that's a separate piece of work.
       return (
         <div className="h-full overflow-y-auto space-y-2 text-xs font-sans text-neutral-800 p-1">
           <div className="bg-milk-yellow/20 border-l-2 border-black p-2">
-            <span className="font-mono text-[10px] font-bold uppercase block text-neutral-700">Fact</span>
+            <span className="font-mono text-[10px] font-bold uppercase block text-neutral-700">Observed</span>
             <p className="font-semibold text-black">
-              {primaryResult.displayName} shifted by {primaryResult.formattedChange || "0%"} in the current period.
+              {primaryResult
+                ? `${primaryResult.displayName} is ${primaryResult.formattedValue}${
+                    primaryResult.formattedChange
+                      ? `, ${primaryResult.formattedChange} ${primaryResult.comparisonLabel || ""}`.trimEnd()
+                      : ""
+                  }.`
+                : "No metric configured."}
             </p>
           </div>
-          <div className="bg-neutral-50 border border-neutral-200 p-2">
-            <span className="font-mono text-[10px] font-bold uppercase block text-neutral-500">Interpretation</span>
-            <p className="text-neutral-700">
-              Delivery trends indicate optimal audience engagement with creative assets.
-            </p>
+          <p className="font-mono text-[10px] text-neutral-500 px-2 leading-relaxed">
+            Interpretation is not generated automatically. Use a Text / Notes widget for commentary, or an
+            annotation to record what changed on a given day.
+          </p>
+        </div>
+      );
+    }
+
+    case "timeline": {
+      // The annotation log itself, rather than a chart - "what did we change
+      // and when", which is the question a timeline actually answers.
+      if (annotations.length === 0) {
+        return <EmptyBody message="No annotations yet. Add one from the dashboard toolbar to mark what changed." />;
+      }
+      return (
+        <div className="h-full overflow-y-auto text-xs">
+          <div className="relative pl-4 border-l-2 border-neutral-200 ml-1 space-y-3 py-1">
+            {[...annotations]
+              .sort((a, b) => b.date.localeCompare(a.date))
+              .map((a) => (
+                <div key={a.id} className="relative">
+                  <span className="absolute -left-[21px] top-1 w-2.5 h-2.5 bg-milk-yellow border border-black" />
+                  <div className="font-mono text-[10px] text-neutral-500 uppercase">{a.date}</div>
+                  <div className="font-sans font-semibold text-neutral-900 leading-tight">{a.title}</div>
+                  {a.note && <div className="font-sans text-neutral-600 text-[11px] leading-snug">{a.note}</div>}
+                </div>
+              ))}
           </div>
-          <div className="bg-neutral-100 p-2 border border-neutral-200">
-            <span className="font-mono text-[10px] font-bold uppercase block text-neutral-500">Recommendation</span>
-            <p className="text-neutral-900 font-semibold">
-              Maintain current allocation and evaluate secondary messaging angles.
-            </p>
-          </div>
+        </div>
+      );
+    }
+
+    case "image_logo": {
+      const url = widget.displayConfig?.imageUrl;
+      if (!url) {
+        return <EmptyBody message="Add an image URL in this widget's settings." />;
+      }
+      return (
+        <div className="h-full w-full flex items-center justify-center p-1">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={url} alt={widget.title} className="max-h-full max-w-full object-contain" />
         </div>
       );
     }
 
     case "text": {
       return (
-        <div className="h-full p-2 text-xs font-sans text-neutral-700 leading-relaxed overflow-y-auto">
-          {widget.displayConfig?.noteText || "Double-click edit to add custom client text notes."}
+        <div className="h-full p-2 text-xs font-sans text-neutral-700 leading-relaxed overflow-y-auto whitespace-pre-wrap">
+          {widget.displayConfig?.noteText || "Click Edit to add custom client text notes."}
         </div>
       );
     }

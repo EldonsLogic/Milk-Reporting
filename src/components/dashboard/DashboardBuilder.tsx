@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useMemo, useState } from "react";
 import { Layout, Responsive, WidthProvider } from "react-grid-layout";
 import {
   Dashboard,
@@ -8,11 +8,17 @@ import {
   RawDailyRecord,
   ContentPost,
   DateRangePreset,
+  CustomDateRange,
   WidgetType,
   DashboardPage,
 } from "@/types";
 import { WidgetRenderer } from "@/components/widgets/WidgetRenderer";
 import { WidgetConfigDrawer } from "@/components/dashboard/WidgetConfigDrawer";
+import { AnnotationsPanel } from "@/components/dashboard/AnnotationsPanel";
+import { QueryContext, getDateBounds, toDateStr } from "@/lib/query-engine";
+import { Annotation } from "@/lib/supabase-data";
+import { exportDashboardCsv } from "@/lib/csv-export";
+import { DATE_PRESET_OPTIONS, BREAKDOWN_OPTIONS } from "@/lib/date-presets";
 import {
   Plus,
   Edit3,
@@ -21,9 +27,12 @@ import {
   Save,
   Calendar,
   Layers,
-  Sparkles,
   Printer,
   Settings,
+  MessageSquarePlus,
+  Download,
+  BookmarkPlus,
+  Filter,
 } from "lucide-react";
 
 // Responsive grid: reflows columns per breakpoint (12 on desktop down to a
@@ -32,12 +41,63 @@ const ReactGridLayout = WidthProvider(Responsive);
 const GRID_BREAKPOINTS = { lg: 1024, md: 768, sm: 640, xs: 0 };
 const GRID_COLS = { lg: 12, md: 8, sm: 4, xs: 1 };
 
+// Grouped so the list stays scannable now that every implemented widget type
+// is offered here. Previously only nine of the fifteen working types appeared,
+// leaving campaign tables, rankings and the readout variants unreachable.
+const WIDGET_GROUPS: { label: string; items: { type: WidgetType; label: string; desc: string }[] }[] = [
+  {
+    label: "Single Metric",
+    items: [
+      { type: "kpi_card", label: "KPI Card", desc: "Big metric readout with change vs comparison period" },
+      { type: "number", label: "Number Readout", desc: "Same as KPI card, plainer emphasis" },
+      { type: "percentage", label: "Percentage Readout", desc: "For rate metrics like CTR or engagement rate" },
+      { type: "comparison", label: "Comparison Card", desc: "Two metrics side by side" },
+    ],
+  },
+  {
+    label: "Trends Over Time",
+    items: [
+      { type: "line_chart", label: "Line Chart", desc: "Time-series trend line" },
+      { type: "area_chart", label: "Area Chart", desc: "Shaded volume metric trend" },
+      { type: "bar_chart", label: "Bar Chart", desc: "Comparative bar visualizer" },
+      { type: "stacked_bar", label: "Stacked Bar", desc: "Metric over time, split by campaign or platform" },
+      { type: "metric_comparison", label: "Multi-Metric Trend", desc: "Several metrics on one time axis" },
+    ],
+  },
+  {
+    label: "Breakdowns",
+    items: [
+      { type: "campaign_table", label: "Campaign Table", desc: "One row per campaign, ad set or ad with share %" },
+      { type: "ranking", label: "Ranked List", desc: "Top entities by a metric, with proportion bars" },
+      { type: "heatmap", label: "Heatmap Grid", desc: "Tiles shaded by metric intensity" },
+      { type: "donut_chart", label: "Donut Share", desc: "Proportional metric breakdown" },
+      { type: "table", label: "Metric Table", desc: "Configured metrics with values and change" },
+    ],
+  },
+  {
+    label: "Content & Context",
+    items: [
+      { type: "content_table", label: "Content Post Grid", desc: "Per-post thumbnails with caption + engagement" },
+      { type: "timeline", label: "Annotation Timeline", desc: "What the agency changed, and when" },
+      { type: "text", label: "Text / Notes", desc: "Custom client commentary block" },
+      { type: "image_logo", label: "Image / Logo", desc: "Brand mark or image for report headers" },
+    ],
+  },
+];
+
 interface Props {
   dashboard: Dashboard;
   records: RawDailyRecord[];
   contentPosts?: ContentPost[];
+  annotations?: Annotation[];
+  clientId?: string;
+  clientName?: string;
   onSaveDashboard: (updatedDashboard: Dashboard) => Promise<void>;
   onDuplicateDashboard: (dashboard: Dashboard) => void;
+  onSaveAsTemplate?: (dashboard: Dashboard) => void;
+  onAnnotationsChanged?: () => void;
+  /** notifies the shell that the viewed window moved, so it can refetch */
+  onDateRangeChange?: (preset: DateRangePreset, bounds?: CustomDateRange) => void;
   userRole?: "agency_admin" | "client_viewer";
 }
 
@@ -45,8 +105,14 @@ export function DashboardBuilder({
   dashboard,
   records,
   contentPosts = [],
+  annotations = [],
+  clientId,
+  clientName = "client",
   onSaveDashboard,
   onDuplicateDashboard,
+  onSaveAsTemplate,
+  onAnnotationsChanged,
+  onDateRangeChange,
   userRole = "agency_admin",
 }: Props) {
   const [currentDashboard, setCurrentDashboard] = useState<Dashboard>(dashboard);
@@ -55,8 +121,17 @@ export function DashboardBuilder({
   const [globalDateRange, setGlobalDateRange] = useState<DateRangePreset>(
     dashboard.globalDateRange || "last_30_days"
   );
+  const [customBounds, setCustomBounds] = useState<CustomDateRange>(
+    dashboard.customDateBounds || {
+      start: toDateStr(getDateBounds("last_30_days").startDate),
+      end: toDateStr(getDateBounds("last_30_days").endDate),
+    }
+  );
   const [editingWidget, setEditingWidget] = useState<WidgetConfig | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [isAnnotationsOpen, setIsAnnotationsOpen] = useState(false);
+  const [isFiltersOpen, setIsFiltersOpen] = useState(false);
+  const [filterDraft, setFilterDraft] = useState<Record<string, string>>(dashboard.globalFilters || {});
   // null = Add Widget modal closed; undefined = adding to the ungrouped
   // area; a string = adding into that section's id
   const [addWidgetTargetSection, setAddWidgetTargetSection] = useState<string | undefined | null>(null);
@@ -68,6 +143,39 @@ export function DashboardBuilder({
   // toggle in AgencyShell agency admins use to preview) - markup is only
   // ever applied here, never for the agency's own admin view.
   const isClientPerspective = userRole === "client_viewer";
+
+  // Everything a query needs that comes from the dashboard rather than the
+  // widget. Memoized so widgets don't re-query on every unrelated render.
+  const queryContext: QueryContext = useMemo(
+    () => ({
+      globalDateRange,
+      globalCustomBounds: globalDateRange === "custom" ? customBounds : undefined,
+      markupPercentage: isClientPerspective ? currentDashboard.markupPercentage : undefined,
+      globalFilters: currentDashboard.globalFilters,
+    }),
+    [globalDateRange, customBounds, isClientPerspective, currentDashboard.markupPercentage, currentDashboard.globalFilters]
+  );
+
+  const activeFilterCount = Object.values(currentDashboard.globalFilters || {}).filter((v) => v?.trim()).length;
+
+  const changeDateRange = (preset: DateRangePreset, bounds?: CustomDateRange) => {
+    setGlobalDateRange(preset);
+    if (bounds) setCustomBounds(bounds);
+    setCurrentDashboard((prev) => ({
+      ...prev,
+      globalDateRange: preset,
+      customDateBounds: preset === "custom" ? bounds || customBounds : prev.customDateBounds,
+    }));
+    onDateRangeChange?.(preset, preset === "custom" ? bounds || customBounds : undefined);
+  };
+
+  const applyFilters = () => {
+    const cleaned = Object.fromEntries(
+      Object.entries(filterDraft).filter(([, v]) => v?.trim())
+    );
+    setCurrentDashboard((prev) => ({ ...prev, globalFilters: cleaned }));
+    setIsFiltersOpen(false);
+  };
 
   const activePage: DashboardPage =
     currentDashboard.pages[activePageIndex] || currentDashboard.pages[0];
@@ -254,9 +362,9 @@ export function DashboardBuilder({
               widget={widget}
               records={records}
               contentPosts={contentPosts}
-              globalDateRange={globalDateRange}
+              ctx={queryContext}
+              annotations={annotations}
               isEditMode={isEditMode}
-              markupPercentage={isClientPerspective ? currentDashboard.markupPercentage : undefined}
               onEdit={(w) => setEditingWidget(w)}
               onDelete={(id) => handleDeleteWidget(id)}
             />
@@ -323,17 +431,55 @@ export function DashboardBuilder({
             <Calendar className="w-3.5 h-3.5 text-neutral-700" />
             <select
               value={globalDateRange}
-              onChange={(e) => setGlobalDateRange(e.target.value as DateRangePreset)}
+              onChange={(e) => changeDateRange(e.target.value as DateRangePreset)}
               className="bg-transparent focus:outline-none font-bold text-black cursor-pointer"
             >
-              <option value="last_7_days">Last 7 Days</option>
-              <option value="last_14_days">Last 14 Days</option>
-              <option value="last_30_days">Last 30 Days</option>
-              <option value="last_90_days">Last 90 Days</option>
-              <option value="this_month">This Month</option>
-              <option value="previous_month">Previous Month</option>
+              {DATE_PRESET_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
             </select>
           </div>
+
+          {globalDateRange === "custom" && (
+            <div className="flex items-center gap-1 bg-white border border-black px-2 py-1">
+              <input
+                type="date"
+                value={customBounds.start}
+                max={customBounds.end}
+                onChange={(e) => changeDateRange("custom", { ...customBounds, start: e.target.value })}
+                className="bg-transparent focus:outline-none font-bold text-black"
+              />
+              <span className="text-neutral-400">→</span>
+              <input
+                type="date"
+                value={customBounds.end}
+                min={customBounds.start}
+                onChange={(e) => changeDateRange("custom", { ...customBounds, end: e.target.value })}
+                className="bg-transparent focus:outline-none font-bold text-black"
+              />
+            </div>
+          )}
+
+          {/* Dashboard-wide dimension filters */}
+          {userRole === "agency_admin" && (
+            <button
+              onClick={() => {
+                setFilterDraft(currentDashboard.globalFilters || {});
+                setIsFiltersOpen(true);
+              }}
+              className={`px-2.5 py-1.5 font-bold border flex items-center gap-1 ${
+                activeFilterCount > 0
+                  ? "bg-milk-yellow text-black border-black shadow-crisp-sm"
+                  : "bg-white text-neutral-700 border-neutral-300 hover:border-black"
+              }`}
+              title="Filter every widget on this dashboard"
+            >
+              <Filter className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Filters{activeFilterCount > 0 ? ` (${activeFilterCount})` : ""}</span>
+            </button>
+          )}
 
           {/* Export PDF Report */}
           <button
@@ -343,6 +489,15 @@ export function DashboardBuilder({
           >
             <Printer className="w-3.5 h-3.5" />
             <span>Export PDF</span>
+          </button>
+
+          <button
+            onClick={() => exportDashboardCsv(currentDashboard, records, queryContext, activePageIndex)}
+            className="px-2.5 py-1.5 font-bold bg-white text-neutral-700 border border-neutral-300 hover:border-black flex items-center gap-1"
+            title="Export this page's data as CSV"
+          >
+            <Download className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">CSV</span>
           </button>
 
           {/* Agency Admin Only Controls */}
@@ -378,6 +533,32 @@ export function DashboardBuilder({
                 >
                   <Plus className="w-3.5 h-3.5" />
                   <span>Add Widget</span>
+                </button>
+              )}
+
+              {/* Annotations */}
+              {clientId && (
+                <button
+                  onClick={() => setIsAnnotationsOpen(true)}
+                  className="px-2.5 py-1.5 font-bold bg-white text-neutral-700 border border-neutral-300 hover:border-black flex items-center gap-1"
+                  title="Record what changed on a given day"
+                >
+                  <MessageSquarePlus className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">
+                    Annotate{annotations.length > 0 ? ` (${annotations.length})` : ""}
+                  </span>
+                </button>
+              )}
+
+              {/* Save as reusable template */}
+              {onSaveAsTemplate && (
+                <button
+                  onClick={() => onSaveAsTemplate(currentDashboard)}
+                  className="px-2.5 py-1.5 font-bold bg-white text-neutral-700 border border-neutral-300 hover:border-black flex items-center gap-1"
+                  title="Save this layout as a reusable template"
+                >
+                  <BookmarkPlus className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">Template</span>
                 </button>
               )}
 
@@ -519,6 +700,70 @@ export function DashboardBuilder({
         />
       )}
 
+      {/* Annotations Drawer */}
+      {isAnnotationsOpen && clientId && (
+        <AnnotationsPanel
+          clientId={clientId}
+          annotations={annotations}
+          onClose={() => setIsAnnotationsOpen(false)}
+          onChanged={() => onAnnotationsChanged?.()}
+        />
+      )}
+
+      {/* Dashboard-wide dimension filters */}
+      {isFiltersOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-xs p-4">
+          <div className="bg-white border-2 border-black max-w-md w-full p-6 shadow-2xl">
+            <h3 className="text-lg font-display font-extrabold uppercase text-black mb-1">Dashboard Filters</h3>
+            <p className="text-xs font-mono text-neutral-500 mb-4">
+              Scopes every widget on this dashboard. Matched as a partial, case-insensitive match — &quot;summer&quot;
+              matches &quot;Summer Glow — Prospecting&quot;. Leave blank to include everything.
+            </p>
+
+            <div className="space-y-3">
+              {BREAKDOWN_OPTIONS.map((dim) => (
+                <div key={dim.value}>
+                  <label className="block text-xs font-mono font-bold uppercase text-neutral-800 mb-1">
+                    {dim.label}
+                  </label>
+                  <input
+                    type="text"
+                    value={filterDraft[dim.value] || ""}
+                    onChange={(e) => setFilterDraft({ ...filterDraft, [dim.value]: e.target.value })}
+                    placeholder="Any"
+                    className="w-full p-2 border border-neutral-300 focus:border-black focus:outline-none bg-milk-bg font-sans text-sm"
+                  />
+                </div>
+              ))}
+            </div>
+
+            <div className="flex gap-2 mt-5">
+              <button
+                onClick={() => setFilterDraft({})}
+                className="px-3 py-2 font-mono text-xs font-bold border border-neutral-300 hover:border-black bg-white text-neutral-700"
+              >
+                Clear All
+              </button>
+              <button
+                onClick={() => setIsFiltersOpen(false)}
+                className="flex-1 py-2 font-mono text-xs font-bold border border-neutral-300 hover:border-black bg-neutral-100 text-black"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={applyFilters}
+                className="flex-1 py-2 font-mono text-xs font-bold bg-milk-yellow border border-black hover:bg-milk-yellowHover text-black shadow-crisp-sm"
+              >
+                Apply Filters
+              </button>
+            </div>
+            <p className="text-[11px] font-mono text-neutral-500 mt-3">
+              Filters apply immediately on screen. Click Save on the toolbar to keep them on this dashboard.
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Dashboard Settings Modal (markup) */}
       {isSettingsOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-xs p-4">
@@ -564,31 +809,28 @@ export function DashboardBuilder({
       {/* Add Widget Picker Modal */}
       {addWidgetTargetSection !== null && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-xs p-4">
-          <div className="bg-white border-2 border-black max-w-lg w-full p-6 shadow-2xl">
+          <div className="bg-white border-2 border-black max-w-2xl w-full p-6 shadow-2xl max-h-[85vh] overflow-y-auto">
             <h3 className="text-lg font-display font-extrabold uppercase text-black mb-1">Add Widget</h3>
             <p className="text-xs font-mono text-neutral-500 mb-4">Choose a visualization card to place on grid</p>
-            <div className="grid grid-cols-2 gap-2 text-xs font-mono mb-6">
-              {[
-                { type: "kpi_card", label: "KPI Card", desc: "Single big metric readout with delta" },
-                { type: "line_chart", label: "Line Chart", desc: "Time-series trend line" },
-                { type: "area_chart", label: "Area Chart", desc: "Shaded volume metric trend" },
-                { type: "bar_chart", label: "Bar Chart", desc: "Comparative bar visualizer" },
-                { type: "donut_chart", label: "Donut Share", desc: "Proportional metric breakdown" },
-                { type: "table", label: "Data Table", desc: "Structured performance table" },
-                { type: "content_table", label: "Content Post Grid", desc: "Per-post thumbnails with caption + engagement" },
-                { type: "ai_insight", label: "AI Diagnostic", desc: "Fact -> Interpretation card" },
-                { type: "text", label: "Text / Notes", desc: "Custom client annotation block" },
-              ].map((item) => (
-                <button
-                  key={item.type}
-                  onClick={() => handleAddWidget(item.type as WidgetType)}
-                  className="p-3 border border-neutral-200 hover:border-black hover:bg-milk-yellow text-left transition-all group"
-                >
-                  <div className="font-bold text-black group-hover:underline">{item.label}</div>
-                  <div className="text-[10px] text-neutral-500 font-sans mt-0.5">{item.desc}</div>
-                </button>
-              ))}
-            </div>
+            {WIDGET_GROUPS.map((group) => (
+              <div key={group.label} className="mb-5">
+                <h4 className="font-mono text-[10px] font-bold uppercase tracking-widest text-neutral-500 border-b border-neutral-200 pb-1 mb-2">
+                  {group.label}
+                </h4>
+                <div className="grid grid-cols-2 gap-2 text-xs font-mono">
+                  {group.items.map((item) => (
+                    <button
+                      key={item.type}
+                      onClick={() => handleAddWidget(item.type as WidgetType)}
+                      className="p-3 border border-neutral-200 hover:border-black hover:bg-milk-yellow text-left transition-all group"
+                    >
+                      <div className="font-bold text-black group-hover:underline">{item.label}</div>
+                      <div className="text-[10px] text-neutral-500 font-sans mt-0.5">{item.desc}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
             <div className="flex justify-end">
               <button
                 onClick={() => setAddWidgetTargetSection(null)}

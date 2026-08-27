@@ -3,8 +3,18 @@
 import React, { useEffect, useState } from "react";
 import { Client, Dashboard, RawDailyRecord, ContentPost } from "@/types";
 import { supabase } from "@/lib/supabase-client";
-import { fetchDashboardsForClient, fetchRecords, fetchContentPosts, fetchVisibleCustomMetrics, saveDashboard } from "@/lib/supabase-data";
+import {
+  fetchDashboardsForClient,
+  fetchRecords,
+  fetchContentPosts,
+  fetchVisibleCustomMetrics,
+  fetchAnnotations,
+  saveDashboard,
+  Annotation,
+} from "@/lib/supabase-data";
 import { setCustomMetricsCache } from "@/lib/metric-catalog";
+import { getDateBounds, toDateStr } from "@/lib/query-engine";
+import { DateRangePreset, CustomDateRange } from "@/types";
 import { DashboardBuilder } from "@/components/dashboard/DashboardBuilder";
 import { useAuth } from "@/lib/auth-context";
 import { LogOut } from "lucide-react";
@@ -28,8 +38,25 @@ export function ClientPortalShell({ clientId }: { clientId: string }) {
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [records, setRecords] = useState<RawDailyRecord[]>([]);
   const [contentPosts, setContentPosts] = useState<ContentPost[]>([]);
+  const [annotations, setAnnotations] = useState<Annotation[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Widened when the client picks a longer date range - records are fetched
+  // date-bounded rather than in full.
+  const [dataWindow, setDataWindow] = useState(() => {
+    const { startDate, endDate } = getDateBounds("last_90_days");
+    return { start: toDateStr(startDate), end: toDateStr(endDate) };
+  });
+
+  const handleDateRangeChange = (preset: DateRangePreset, bounds?: CustomDateRange) => {
+    const { startDate, endDate } = getDateBounds(preset, bounds);
+    const next = { start: toDateStr(startDate), end: toDateStr(endDate) };
+    setDataWindow((prev) =>
+      next.start < prev.start || next.end > prev.end
+        ? { start: next.start < prev.start ? next.start : prev.start, end: next.end > prev.end ? next.end : prev.end }
+        : prev
+    );
+  };
 
   useEffect(() => {
     let active = true;
@@ -57,17 +84,19 @@ export function ClientPortalShell({ clientId }: { clientId: string }) {
           logoUrl: clientRow.agencies?.logo_url || null,
         });
 
-        const [dashboards, recordList, contentList, customMetrics] = await Promise.all([
+        const [dashboards, recordList, contentList, customMetrics, annotationList] = await Promise.all([
           fetchDashboardsForClient(clientId),
-          fetchRecords(clientId),
-          fetchContentPosts(clientId),
+          fetchRecords(clientId, dataWindow),
+          fetchContentPosts(clientId, dataWindow),
           fetchVisibleCustomMetrics(),
+          fetchAnnotations(clientId),
         ]);
         if (!active) return;
         setCustomMetricsCache(customMetrics);
         setDashboard(dashboards.find((d) => d.isDefault) || dashboards[0] || null);
         setRecords(recordList);
         setContentPosts(contentList);
+        setAnnotations(annotationList);
       } catch (err) {
         if (active) setError(err instanceof Error ? err.message : "Failed to load your dashboard");
       } finally {
@@ -77,7 +106,33 @@ export function ClientPortalShell({ clientId }: { clientId: string }) {
     return () => {
       active = false;
     };
+    // dataWindow is intentionally excluded - the records-only effect below
+    // handles window changes, so widening the range doesn't re-fetch the
+    // dashboard and reset the view the client is looking at.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clientId]);
+
+  // Only records/posts depend on the selected window.
+  const isFirstWindowLoad = React.useRef(true);
+  useEffect(() => {
+    if (isFirstWindowLoad.current) {
+      isFirstWindowLoad.current = false;
+      return;
+    }
+    let active = true;
+    (async () => {
+      const [recordList, contentList] = await Promise.all([
+        fetchRecords(clientId, dataWindow),
+        fetchContentPosts(clientId, dataWindow),
+      ]);
+      if (!active) return;
+      setRecords(recordList);
+      setContentPosts(contentList);
+    })();
+    return () => {
+      active = false;
+    };
+  }, [clientId, dataWindow]);
 
   if (loading) {
     return (
@@ -136,8 +191,11 @@ export function ClientPortalShell({ clientId }: { clientId: string }) {
           dashboard={dashboard}
           records={records}
           contentPosts={contentPosts}
+          annotations={annotations}
+          clientName={client.name}
           onSaveDashboard={saveDashboard}
           onDuplicateDashboard={async () => {}}
+          onDateRangeChange={handleDateRangeChange}
           userRole="client_viewer"
         />
       )}

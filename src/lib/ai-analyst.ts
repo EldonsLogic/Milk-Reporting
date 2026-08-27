@@ -15,7 +15,7 @@ export function generateStructuredInsight(
   const queryResult = queryWidgetData(
     records,
     { platform: "all", metricIds: [metricId] },
-    "last_30_days"
+    { globalDateRange: "last_30_days" }
   )[0];
 
   if (!queryResult) {

@@ -213,6 +213,10 @@ function mapDashboardRow(row: Record<string, any>): Dashboard {
     description: row.description || undefined,
     isDefault: row.is_default,
     globalDateRange: row.global_date_range,
+    customDateBounds:
+      row.custom_date_start && row.custom_date_end
+        ? { start: row.custom_date_start, end: row.custom_date_end }
+        : undefined,
     globalFilters: row.global_filters || {},
     markupPercentage: row.markup_percentage != null ? Number(row.markup_percentage) : undefined,
     createdAt: row.created_at,
@@ -310,6 +314,8 @@ export async function saveDashboard(dashboard: Dashboard): Promise<void> {
     p_global_date_range: dashboard.globalDateRange,
     p_global_filters: dashboard.globalFilters || {},
     p_markup_percentage: dashboard.markupPercentage ?? 0,
+    p_custom_date_start: dashboard.customDateBounds?.start || null,
+    p_custom_date_end: dashboard.customDateBounds?.end || null,
     p_pages: dashboard.pages.map((page) => ({
       id: page.id,
       title: page.title,
@@ -435,10 +441,34 @@ function mapOrganicMetricRow(row: Record<string, any>): RawDailyRecord {
   };
 }
 
-export async function fetchRecords(clientId: string): Promise<RawDailyRecord[]> {
+/**
+ * Fetches a client's daily records, bounded to the window actually being
+ * viewed. Previously this pulled every row a client had ever accumulated and
+ * let the browser filter by date - fine against seeded mock data, but Meta's
+ * ad-level daily rows are campaign x ad set x ad x day, so a year of history
+ * on a busy account is tens of thousands of rows fetched to render "last 7
+ * days". Both tables are indexed on (client_id, date).
+ *
+ * The window is widened by a year on the low end so year-over-year comparison
+ * still has data to compare against, and PostgREST's 1000-row default cap is
+ * lifted explicitly - without that, a large account would silently render
+ * partial numbers rather than erroring.
+ */
+export async function fetchRecords(
+  clientId: string,
+  window?: { start: string; end: string }
+): Promise<RawDailyRecord[]> {
+  const applyWindow = <T extends { gte: Function; lte: Function }>(query: T): T => {
+    if (!window) return query;
+    const comparisonStart = new Date(`${window.start}T00:00:00`);
+    comparisonStart.setFullYear(comparisonStart.getFullYear() - 1);
+    const lowerBound = `${comparisonStart.getFullYear()}-${`${comparisonStart.getMonth() + 1}`.padStart(2, "0")}-${`${comparisonStart.getDate()}`.padStart(2, "0")}`;
+    return query.gte("date", lowerBound).lte("date", window.end) as T;
+  };
+
   const [paidRes, organicRes] = await Promise.all([
-    supabase.from("paid_daily_metrics").select("*").eq("client_id", clientId),
-    supabase.from("organic_daily_metrics").select("*").eq("client_id", clientId),
+    applyWindow(supabase.from("paid_daily_metrics").select("*").eq("client_id", clientId)).limit(100000),
+    applyWindow(supabase.from("organic_daily_metrics").select("*").eq("client_id", clientId)).limit(100000),
   ]);
   if (paidRes.error) throw paidRes.error;
   if (organicRes.error) throw organicRes.error;
@@ -468,12 +498,23 @@ function mapContentItemRow(row: Record<string, any>): ContentPost {
   };
 }
 
-export async function fetchContentPosts(clientId: string): Promise<ContentPost[]> {
-  const { data, error } = await supabase
+export async function fetchContentPosts(
+  clientId: string,
+  window?: { start: string; end: string }
+): Promise<ContentPost[]> {
+  let query = supabase
     .from("organic_content_items")
     .select("*")
     .eq("client_id", clientId)
     .order("published_at", { ascending: false });
+
+  if (window) {
+    // published_at is a timestamp, so the upper bound has to cover the whole
+    // final day rather than stopping at its midnight.
+    query = query.gte("published_at", `${window.start}T00:00:00Z`).lte("published_at", `${window.end}T23:59:59Z`);
+  }
+
+  const { data, error } = await query.limit(5000);
   if (error) throw error;
   return (data || []).map(mapContentItemRow);
 }
@@ -532,4 +573,302 @@ export async function saveCustomMetricToSupabase(agencyId: string, metric: Metri
 export async function deleteCustomMetricFromSupabase(metricId: string) {
   const { error } = await supabase.from("custom_metrics").delete().eq("id", metricId);
   if (error) throw error;
+}
+
+// ---------------------------------------------------------------------------
+// Annotations - the agency's own record of what happened on a given day.
+// Rendered as markers on time-series widgets so a spike carries the
+// explanation the agency actually knows.
+// ---------------------------------------------------------------------------
+
+export interface Annotation {
+  id: string;
+  clientId: string;
+  date: string;
+  title: string;
+  note?: string;
+  category: string;
+  createdAt: string;
+}
+
+function mapAnnotationRow(row: Record<string, any>): Annotation {
+  return {
+    id: row.id,
+    clientId: row.client_id,
+    date: row.date,
+    title: row.title,
+    note: row.note || undefined,
+    category: row.category || "general",
+    createdAt: row.created_at,
+  };
+}
+
+export async function fetchAnnotations(clientId: string): Promise<Annotation[]> {
+  const { data, error } = await supabase
+    .from("annotations")
+    .select("*")
+    .eq("client_id", clientId)
+    .order("date", { ascending: true });
+  if (error) throw error;
+  return (data || []).map(mapAnnotationRow);
+}
+
+export async function createAnnotation(input: {
+  clientId: string;
+  date: string;
+  title: string;
+  note?: string;
+  category?: string;
+  userId?: string;
+}): Promise<Annotation> {
+  const { data, error } = await supabase
+    .from("annotations")
+    .insert({
+      id: `ann-${Date.now()}`,
+      client_id: input.clientId,
+      date: input.date,
+      title: input.title,
+      note: input.note || null,
+      category: input.category || "general",
+      created_by: input.userId || null,
+    })
+    .select()
+    .single();
+  if (error) throw error;
+  return mapAnnotationRow(data);
+}
+
+export async function updateAnnotation(
+  id: string,
+  patch: Partial<{ date: string; title: string; note: string; category: string }>
+): Promise<void> {
+  const update: Record<string, any> = {};
+  if (patch.date !== undefined) update.date = patch.date;
+  if (patch.title !== undefined) update.title = patch.title;
+  if (patch.note !== undefined) update.note = patch.note || null;
+  if (patch.category !== undefined) update.category = patch.category;
+  const { error } = await supabase.from("annotations").update(update).eq("id", id);
+  if (error) throw error;
+}
+
+export async function deleteAnnotation(id: string): Promise<void> {
+  const { error } = await supabase.from("annotations").delete().eq("id", id);
+  if (error) throw error;
+}
+
+// ---------------------------------------------------------------------------
+// Sync logs - ingestion history / data health
+// ---------------------------------------------------------------------------
+
+export interface SyncLog {
+  id: string;
+  connectionId: string | null;
+  clientId: string;
+  platform: string;
+  accountName: string | null;
+  status: "success" | "error" | "partial";
+  triggerSource: "manual" | "cron" | "backfill";
+  rangeSince: string | null;
+  rangeUntil: string | null;
+  recordsSynced: number;
+  contentItemsSynced: number;
+  error: string | null;
+  durationMs: number | null;
+  createdAt: string;
+}
+
+function mapSyncLogRow(row: Record<string, any>): SyncLog {
+  return {
+    id: row.id,
+    connectionId: row.connection_id,
+    clientId: row.client_id,
+    platform: row.platform,
+    accountName: row.account_name,
+    status: row.status,
+    triggerSource: row.trigger_source,
+    rangeSince: row.range_since,
+    rangeUntil: row.range_until,
+    recordsSynced: row.records_synced || 0,
+    contentItemsSynced: row.content_items_synced || 0,
+    error: row.error,
+    durationMs: row.duration_ms,
+    createdAt: row.created_at,
+  };
+}
+
+export async function fetchSyncLogs(clientId: string, limit = 50): Promise<SyncLog[]> {
+  const { data, error } = await supabase
+    .from("sync_logs")
+    .select("*")
+    .eq("client_id", clientId)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+  if (error) throw error;
+  return (data || []).map(mapSyncLogRow);
+}
+
+/** Most recent sync per connection across the whole agency - powers the health board. */
+export async function fetchRecentSyncLogs(limit = 200): Promise<SyncLog[]> {
+  const { data, error } = await supabase
+    .from("sync_logs")
+    .select("*")
+    .order("created_at", { ascending: false })
+    .limit(limit);
+  if (error) throw error;
+  return (data || []).map(mapSyncLogRow);
+}
+
+// ---------------------------------------------------------------------------
+// Dashboard templates - save a built dashboard's structure, stamp it onto a
+// new client. The table existed from the original schema but nothing ever
+// read or wrote it.
+// ---------------------------------------------------------------------------
+
+export interface StoredTemplate {
+  id: string;
+  agencyId: string;
+  name: string;
+  category: string;
+  description?: string;
+  pages: Omit<DashboardPage, "id" | "dashboardId">[];
+  createdAt: string;
+}
+
+function mapTemplateRow(row: Record<string, any>): StoredTemplate {
+  return {
+    id: row.id,
+    agencyId: row.agency_id,
+    name: row.name,
+    category: row.category,
+    description: row.description || undefined,
+    pages: (row.template_structure?.pages || []) as Omit<DashboardPage, "id" | "dashboardId">[],
+    createdAt: row.created_at,
+  };
+}
+
+export async function fetchTemplates(agencyId: string): Promise<StoredTemplate[]> {
+  const { data, error } = await supabase
+    .from("dashboard_templates")
+    .select("*")
+    .eq("agency_id", agencyId)
+    .order("created_at", { ascending: false });
+  if (error) throw error;
+  return (data || []).map(mapTemplateRow);
+}
+
+/**
+ * Snapshots a dashboard's structure. Widget and page ids are deliberately
+ * stripped here and regenerated on apply - reusing them would make two
+ * dashboards built from one template collide on primary keys.
+ */
+export async function saveDashboardAsTemplate(input: {
+  agencyId: string;
+  name: string;
+  category: string;
+  description?: string;
+  dashboard: Dashboard;
+}): Promise<StoredTemplate> {
+  const pages = input.dashboard.pages.map((page) => ({
+    title: page.title,
+    sortOrder: page.sortOrder,
+    sections: page.sections || [],
+    widgets: page.widgets.map((w) => ({
+      pageId: "",
+      sectionId: w.sectionId,
+      widgetType: w.widgetType,
+      title: w.title,
+      grid: w.grid,
+      dataConfig: w.dataConfig,
+      displayConfig: w.displayConfig || {},
+    })),
+  }));
+
+  const { data, error } = await supabase
+    .from("dashboard_templates")
+    .insert({
+      id: `tpl-${Date.now()}`,
+      agency_id: input.agencyId,
+      name: input.name,
+      category: input.category,
+      description: input.description || null,
+      template_structure: { pages },
+    })
+    .select()
+    .single();
+  if (error) throw error;
+  return mapTemplateRow(data);
+}
+
+export async function deleteTemplate(templateId: string): Promise<void> {
+  const { error } = await supabase.from("dashboard_templates").delete().eq("id", templateId);
+  if (error) throw error;
+}
+
+/**
+ * Creates a new dashboard for a client from a stored template, regenerating
+ * every page/section/widget id so repeated applications never collide.
+ * Section ids are remapped through a lookup so widgets stay attached to the
+ * section they were grouped under in the template.
+ */
+export async function createDashboardFromTemplate(
+  clientId: string,
+  title: string,
+  template: StoredTemplate
+): Promise<Dashboard> {
+  const created = await createDashboard(clientId, title);
+  const stamp = Date.now();
+
+  const pages: DashboardPage[] = template.pages.map((page, pageIndex) => {
+    const pageId = `p-${stamp}-${pageIndex}`;
+    const sectionIdMap = new Map<string, string>();
+    const sections = (page.sections || []).map((section, sectionIndex) => {
+      const newId = `sec-${stamp}-${pageIndex}-${sectionIndex}`;
+      sectionIdMap.set(section.id, newId);
+      return { ...section, id: newId };
+    });
+
+    return {
+      id: pageId,
+      dashboardId: created.id,
+      title: page.title,
+      sortOrder: page.sortOrder ?? pageIndex,
+      sections,
+      widgets: (page.widgets || []).map((w, widgetIndex) => ({
+        ...w,
+        id: `w-${stamp}-${pageIndex}-${widgetIndex}`,
+        pageId,
+        sectionId: w.sectionId ? sectionIdMap.get(w.sectionId) : undefined,
+      })),
+    };
+  });
+
+  const populated: Dashboard = { ...created, pages };
+  await saveDashboard(populated);
+  return populated;
+}
+
+// ---------------------------------------------------------------------------
+// Agency seats
+// ---------------------------------------------------------------------------
+
+export interface AgencySeat {
+  id: string;
+  userId: string;
+  fullName: string | null;
+  createdAt: string;
+}
+
+export async function fetchAgencySeats(agencyId: string): Promise<AgencySeat[]> {
+  const { data, error } = await supabase
+    .from("agency_users")
+    .select("id, user_id, full_name, created_at")
+    .eq("agency_id", agencyId)
+    .order("created_at", { ascending: true });
+  if (error) throw error;
+  return (data || []).map((row) => ({
+    id: row.id,
+    userId: row.user_id,
+    fullName: row.full_name,
+    createdAt: row.created_at,
+  }));
 }

@@ -83,6 +83,26 @@ export type DateRangePreset =
 
 export type ComparisonPreset = "previous_period" | "previous_year" | "none";
 
+/** Explicit bounds for the "custom" date preset (ISO yyyy-mm-dd). */
+export interface CustomDateRange {
+  start: string;
+  end: string;
+}
+
+/**
+ * Dimensions a widget can group by. "date" is the implicit default for
+ * time-series widgets; the rest produce one row per entity and back the
+ * campaign table / ranking / stacked bar / heatmap widgets.
+ */
+export type BreakdownDimension =
+  | "date"
+  | "platform"
+  | "campaign"
+  | "adset"
+  | "ad"
+  | "objective"
+  | "account";
+
 export interface WidgetDataFilter {
   field: string;
   operator: "equals" | "contains" | "in" | "greater_than";
@@ -92,9 +112,11 @@ export interface WidgetDataFilter {
 export interface WidgetDataConfig {
   platform: Platform | "all";
   metricIds: string[];
-  breakdown?: "date" | "platform" | "campaign" | "adset" | "ad" | "content_type" | "device" | "country";
+  breakdown?: BreakdownDimension;
   dateRangeMode?: "inherit_dashboard" | "override";
   customDateRange?: DateRangePreset;
+  /** bounds used when customDateRange is "custom" */
+  customDateBounds?: CustomDateRange;
   comparisonMode?: ComparisonPreset;
   filters?: WidgetDataFilter[];
   sortBy?: string;
@@ -108,6 +130,8 @@ export interface WidgetDisplayConfig {
   colorPalette?: string[];
   numberFormat?: "compact" | "standard" | "currency" | "percent";
   noteText?: string;
+  /** image_logo widgets only - the image to display */
+  imageUrl?: string;
 }
 
 export interface WidgetConfig {
@@ -145,6 +169,13 @@ export interface Dashboard {
   description?: string;
   isDefault?: boolean;
   globalDateRange: DateRangePreset;
+  /** bounds used when globalDateRange is "custom" */
+  customDateBounds?: CustomDateRange;
+  /**
+   * Dimension filters applied to every widget on the dashboard - keyed by
+   * BreakdownDimension ("campaign", "adset", ...), matched case-insensitively
+   * as a substring so "summer" matches "Summer Glow — Prospecting".
+   */
   globalFilters?: Record<string, string>;
   pages: DashboardPage[];
   createdAt: string;

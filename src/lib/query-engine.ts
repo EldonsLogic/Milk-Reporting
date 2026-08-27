@@ -2,7 +2,10 @@ import {
   RawDailyRecord,
   DateRangePreset,
   ComparisonPreset,
+  CustomDateRange,
+  BreakdownDimension,
   WidgetDataConfig,
+  WidgetDataFilter,
   ContentPost,
 } from "@/types";
 import { getMetricById } from "./metric-catalog";
@@ -16,42 +19,92 @@ export interface AggregatedQueryResult {
   changePercentage?: number;
   formattedValue: string;
   formattedChange?: string;
+  /** e.g. "vs prev period" / "vs same period last year"; absent when comparison is off */
+  comparisonLabel?: string;
   trendData?: { date: string; value: number; secondaryValue?: number }[];
   breakdownData?: { label: string; value: number }[];
 }
 
-export function getDateBounds(preset: DateRangePreset): { startDate: Date; endDate: Date } {
-  const endDate = new Date();
-  const startDate = new Date(endDate);
+/**
+ * Local-calendar yyyy-mm-dd. Deliberately NOT toISOString().split("T")[0],
+ * which converts to UTC first and so reports "yesterday" for anyone west of
+ * Greenwich during their evening - an off-by-one day on every date bound.
+ */
+export function toDateStr(d: Date): string {
+  const month = `${d.getMonth() + 1}`.padStart(2, "0");
+  const day = `${d.getDate()}`.padStart(2, "0");
+  return `${d.getFullYear()}-${month}-${day}`;
+}
+
+function startOfQuarter(d: Date): Date {
+  return new Date(d.getFullYear(), Math.floor(d.getMonth() / 3) * 3, 1);
+}
+
+export function getDateBounds(
+  preset: DateRangePreset,
+  custom?: CustomDateRange
+): { startDate: Date; endDate: Date } {
+  const today = new Date();
+  let startDate = new Date(today);
+  let endDate = new Date(today);
 
   switch (preset) {
     case "today":
       break;
     case "yesterday":
-      startDate.setDate(endDate.getDate() - 1);
+      // Both bounds move back a day. Previously only the start moved, so
+      // "Yesterday" silently reported yesterday *and* today.
+      startDate.setDate(today.getDate() - 1);
+      endDate.setDate(today.getDate() - 1);
       break;
     case "last_7_days":
-      startDate.setDate(endDate.getDate() - 6);
+      startDate.setDate(today.getDate() - 6);
       break;
     case "last_14_days":
-      startDate.setDate(endDate.getDate() - 13);
+      startDate.setDate(today.getDate() - 13);
       break;
     case "last_30_days":
-      startDate.setDate(endDate.getDate() - 29);
+      startDate.setDate(today.getDate() - 29);
       break;
     case "last_90_days":
-      startDate.setDate(endDate.getDate() - 89);
+      startDate.setDate(today.getDate() - 89);
       break;
     case "this_month":
-      startDate.setDate(1);
+      startDate = new Date(today.getFullYear(), today.getMonth(), 1);
       break;
     case "previous_month":
-      startDate.setMonth(endDate.getMonth() - 1);
-      startDate.setDate(1);
-      endDate.setDate(0);
+      startDate = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+      endDate = new Date(today.getFullYear(), today.getMonth(), 0);
+      break;
+    case "this_quarter":
+      startDate = startOfQuarter(today);
+      break;
+    case "previous_quarter": {
+      const thisQuarterStart = startOfQuarter(today);
+      startDate = new Date(thisQuarterStart.getFullYear(), thisQuarterStart.getMonth() - 3, 1);
+      endDate = new Date(thisQuarterStart.getFullYear(), thisQuarterStart.getMonth(), 0);
+      break;
+    }
+    case "year_to_date":
+      startDate = new Date(today.getFullYear(), 0, 1);
+      break;
+    case "previous_year":
+      startDate = new Date(today.getFullYear() - 1, 0, 1);
+      endDate = new Date(today.getFullYear() - 1, 11, 31);
+      break;
+    case "custom":
+      // Falls back to last 30 days when a dashboard is set to "custom" but
+      // has no bounds saved yet (e.g. mid-edit), rather than returning an
+      // empty range that would render every widget as zero.
+      if (custom?.start && custom?.end) {
+        startDate = new Date(`${custom.start}T00:00:00`);
+        endDate = new Date(`${custom.end}T00:00:00`);
+      } else {
+        startDate.setDate(today.getDate() - 29);
+      }
       break;
     default:
-      startDate.setDate(endDate.getDate() - 29);
+      startDate.setDate(today.getDate() - 29);
   }
 
   return { startDate, endDate };
@@ -62,6 +115,91 @@ export function getPreviousPeriodBounds(startDate: Date, endDate: Date): { prevS
   const prevEnd = new Date(startDate.getTime() - 24 * 60 * 60 * 1000);
   const prevStart = new Date(prevEnd.getTime() - durationMs);
   return { prevStart, prevEnd };
+}
+
+/** Same calendar window, shifted back one year - for year-over-year. */
+export function getPreviousYearBounds(startDate: Date, endDate: Date): { prevStart: Date; prevEnd: Date } {
+  const prevStart = new Date(startDate);
+  prevStart.setFullYear(startDate.getFullYear() - 1);
+  const prevEnd = new Date(endDate);
+  prevEnd.setFullYear(endDate.getFullYear() - 1);
+  return { prevStart, prevEnd };
+}
+
+function getComparisonBounds(
+  mode: ComparisonPreset,
+  startDate: Date,
+  endDate: Date
+): { prevStart: Date; prevEnd: Date } | null {
+  if (mode === "none") return null;
+  if (mode === "previous_year") return getPreviousYearBounds(startDate, endDate);
+  return getPreviousPeriodBounds(startDate, endDate);
+}
+
+// ---------------------------------------------------------------------------
+// Dimension filtering
+// ---------------------------------------------------------------------------
+
+/** Which RawDailyRecord field each breakdown dimension reads. */
+const DIMENSION_FIELD: Record<BreakdownDimension, keyof RawDailyRecord> = {
+  date: "date",
+  platform: "platform",
+  campaign: "campaignName",
+  adset: "adsetName",
+  ad: "adName",
+  objective: "campaignObjective",
+  account: "accountName",
+};
+
+function recordDimensionValue(r: RawDailyRecord, dimension: BreakdownDimension): string {
+  const raw = r[DIMENSION_FIELD[dimension]];
+  return typeof raw === "string" ? raw : "";
+}
+
+/**
+ * Dashboard-level filters: {campaign: "summer", platform: "meta"}. Matched
+ * case-insensitively as a substring, so an agency can scope a whole dashboard
+ * to one campaign family without typing an exact name. An empty value is
+ * treated as "no filter" rather than "match empty".
+ */
+function applyGlobalFilters(
+  records: RawDailyRecord[],
+  filters?: Record<string, string>
+): RawDailyRecord[] {
+  if (!filters) return records;
+  const active = Object.entries(filters).filter(
+    ([dim, value]) => value?.trim() && dim in DIMENSION_FIELD
+  );
+  if (active.length === 0) return records;
+
+  return records.filter((r) =>
+    active.every(([dim, value]) =>
+      recordDimensionValue(r, dim as BreakdownDimension)
+        .toLowerCase()
+        .includes(value.trim().toLowerCase())
+    )
+  );
+}
+
+/** Widget-level filters, which support explicit operators unlike the global ones. */
+function applyWidgetFilters(records: RawDailyRecord[], filters?: WidgetDataFilter[]): RawDailyRecord[] {
+  if (!filters?.length) return records;
+
+  return records.filter((r) =>
+    filters.every((f) => {
+      if (!f.value?.trim()) return true;
+      const raw = r[f.field as keyof RawDailyRecord];
+      const needle = f.value.trim().toLowerCase();
+
+      if (f.operator === "greater_than") {
+        return typeof raw === "number" && raw > parseFloat(f.value);
+      }
+      const hay = typeof raw === "string" ? raw.toLowerCase() : String(raw ?? "").toLowerCase();
+      if (f.operator === "equals") return hay === needle;
+      if (f.operator === "in") return needle.split(",").map((s) => s.trim()).includes(hay);
+      return hay.includes(needle);
+    })
+  );
 }
 
 // Applies the agency's hidden markup to spend before any metric is
@@ -76,55 +214,87 @@ function applyMarkup(records: RawDailyRecord[], markupPercentage?: number): RawD
   return records.map((r) => ({ ...r, spend: r.spend * factor }));
 }
 
+/** Options threaded down from the dashboard rather than the widget itself. */
+export interface QueryContext {
+  globalDateRange?: DateRangePreset;
+  /** bounds for a dashboard set to the "custom" preset */
+  globalCustomBounds?: CustomDateRange;
+  /** agency markup %, only ever passed for the client-facing perspective */
+  markupPercentage?: number;
+  /** dashboard-wide dimension filters */
+  globalFilters?: Record<string, string>;
+}
+
+/**
+ * Resolves the effective window for a widget: its own override if it has one,
+ * otherwise the dashboard's, along with whichever comparison window its
+ * comparisonMode asks for.
+ */
+function resolveWindows(config: WidgetDataConfig, ctx: QueryContext) {
+  const isOverride = config.dateRangeMode === "override" && !!config.customDateRange;
+  const preset = isOverride ? config.customDateRange! : ctx.globalDateRange || "last_30_days";
+  const bounds = isOverride ? config.customDateBounds : ctx.globalCustomBounds;
+
+  const { startDate, endDate } = getDateBounds(preset, bounds);
+  const comparison = getComparisonBounds(config.comparisonMode || "previous_period", startDate, endDate);
+
+  return {
+    startStr: toDateStr(startDate),
+    endStr: toDateStr(endDate),
+    prevStartStr: comparison ? toDateStr(comparison.prevStart) : null,
+    prevEndStr: comparison ? toDateStr(comparison.prevEnd) : null,
+    startDate,
+    endDate,
+  };
+}
+
+/** Platform + global + widget filters, applied in that order, then markup. */
+function scopeRecords(
+  records: RawDailyRecord[],
+  config: WidgetDataConfig,
+  ctx: QueryContext,
+  fromStr: string,
+  toStr: string
+): RawDailyRecord[] {
+  const dateScoped = records.filter((r) => {
+    if (config.platform !== "all" && r.platform !== config.platform) return false;
+    return r.date >= fromStr && r.date <= toStr;
+  });
+  const globallyFiltered = applyGlobalFilters(dateScoped, ctx.globalFilters);
+  const widgetFiltered = applyWidgetFilters(globallyFiltered, config.filters);
+  return applyMarkup(widgetFiltered, ctx.markupPercentage);
+}
+
 export function queryWidgetData(
   records: RawDailyRecord[],
   config: WidgetDataConfig,
-  globalDateRange: DateRangePreset = "last_30_days",
-  markupPercentage?: number
+  ctx: QueryContext = {}
 ): AggregatedQueryResult[] {
-  const selectedRange =
-    config.dateRangeMode === "override" && config.customDateRange
-      ? config.customDateRange
-      : globalDateRange;
+  const win = resolveWindows(config, ctx);
 
-  const { startDate, endDate } = getDateBounds(selectedRange);
-  const { prevStart, prevEnd } = getPreviousPeriodBounds(startDate, endDate);
+  const currentRecords = scopeRecords(records, config, ctx, win.startStr, win.endStr);
+  const previousRecords =
+    win.prevStartStr && win.prevEndStr
+      ? scopeRecords(records, config, ctx, win.prevStartStr, win.prevEndStr)
+      : [];
 
-  const startStr = startDate.toISOString().split("T")[0];
-  const endStr = endDate.toISOString().split("T")[0];
-  const prevStartStr = prevStart.toISOString().split("T")[0];
-  const prevEndStr = prevEnd.toISOString().split("T")[0];
-
-  // Filter current period records
-  const currentRecords = applyMarkup(
-    records.filter((r) => {
-      if (config.platform !== "all" && r.platform !== config.platform) return false;
-      return r.date >= startStr && r.date <= endStr;
-    }),
-    markupPercentage
-  );
-
-  // Filter previous period records
-  const previousRecords = applyMarkup(
-    records.filter((r) => {
-      if (config.platform !== "all" && r.platform !== config.platform) return false;
-      return r.date >= prevStartStr && r.date <= prevEndStr;
-    }),
-    markupPercentage
-  );
+  const comparisonMode = config.comparisonMode || "previous_period";
 
   return config.metricIds.map((metricId) => {
     const metricDef = getMetricById(metricId);
     const displayName = metricDef ? metricDef.displayName : metricId;
 
     const currVal = calculateMetricValue(currentRecords, metricId);
-    const prevVal = calculateMetricValue(previousRecords, metricId);
+    const hasComparison = comparisonMode !== "none";
+    const prevVal = hasComparison ? calculateMetricValue(previousRecords, metricId) : 0;
 
     let changePercentage: number | undefined = undefined;
-    if (prevVal > 0) {
-      changePercentage = ((currVal - prevVal) / prevVal) * 100;
-    } else if (currVal > 0) {
-      changePercentage = 100;
+    if (hasComparison) {
+      if (prevVal > 0) {
+        changePercentage = ((currVal - prevVal) / prevVal) * 100;
+      } else if (currVal > 0) {
+        changePercentage = 100;
+      }
     }
 
     // Build daily trend line
@@ -142,16 +312,144 @@ export function queryWidgetData(
       metricId,
       displayName,
       value: currVal,
-      previousValue: prevVal,
+      previousValue: hasComparison ? prevVal : undefined,
       changePercentage,
       formattedValue: formatMetricValue(currVal, metricDef?.dataType || "integer"),
       formattedChange:
         changePercentage !== undefined
           ? `${changePercentage >= 0 ? "+" : ""}${changePercentage.toFixed(1)}%`
           : undefined,
+      comparisonLabel:
+        comparisonMode === "none"
+          ? undefined
+          : comparisonMode === "previous_year"
+          ? "vs same period last year"
+          : "vs prev period",
       trendData,
     };
   });
+}
+
+// ---------------------------------------------------------------------------
+// Dimensional breakdown - one row per entity rather than one number per metric
+// ---------------------------------------------------------------------------
+
+export interface BreakdownRow {
+  key: string;
+  label: string;
+  /** metricId -> raw numeric value */
+  values: Record<string, number>;
+  /** metricId -> display string */
+  formatted: Record<string, string>;
+  /** share of the total for the first configured metric, 0-100 */
+  sharePercentage: number;
+}
+
+/**
+ * Groups records by a dimension and computes every configured metric within
+ * each group. This is what the aggregate engine above deliberately cannot do -
+ * it always collapses to a single number - and it's what campaign tables,
+ * rankings, stacked bars and heatmaps are actually made of.
+ *
+ * Ratio metrics stay correct here because each group is aggregated through
+ * the same calculateMetricValue as a whole dashboard would be: a group's CTR
+ * is its own clicks/impressions, never an average of daily CTRs.
+ */
+export function queryBreakdown(
+  records: RawDailyRecord[],
+  config: WidgetDataConfig,
+  ctx: QueryContext = {},
+  dimension: BreakdownDimension = "campaign"
+): BreakdownRow[] {
+  const win = resolveWindows(config, ctx);
+  const scoped = scopeRecords(records, config, ctx, win.startStr, win.endStr);
+
+  const groups = new Map<string, RawDailyRecord[]>();
+  for (const r of scoped) {
+    const value = recordDimensionValue(r, dimension);
+    // Records with no value for this dimension (organic rows have no campaign)
+    // are grouped under an explicit label rather than an empty string, so the
+    // table never renders a blank row the reader can't interpret.
+    const key = value || "(not set)";
+    const bucket = groups.get(key);
+    if (bucket) bucket.push(r);
+    else groups.set(key, [r]);
+  }
+
+  const metricIds = config.metricIds.length > 0 ? config.metricIds : ["spend"];
+  const primaryMetric = metricIds[0];
+
+  const rows: BreakdownRow[] = Array.from(groups.entries()).map(([key, groupRecords]) => {
+    const values: Record<string, number> = {};
+    const formatted: Record<string, string> = {};
+    for (const metricId of metricIds) {
+      const metricDef = getMetricById(metricId);
+      const val = calculateMetricValue(groupRecords, metricId);
+      values[metricId] = val;
+      formatted[metricId] = formatMetricValue(val, metricDef?.dataType || "integer");
+    }
+    return { key, label: key, values, formatted, sharePercentage: 0 };
+  });
+
+  // Share is only meaningful for additive metrics; for a ratio like CTR the
+  // "total" is not a sum, so shares are left at 0 rather than invented.
+  const primaryDef = getMetricById(primaryMetric);
+  const isAdditive = !primaryDef?.isDerived;
+  if (isAdditive) {
+    const total = rows.reduce((acc, row) => acc + (row.values[primaryMetric] || 0), 0);
+    if (total > 0) {
+      for (const row of rows) {
+        row.sharePercentage = ((row.values[primaryMetric] || 0) / total) * 100;
+      }
+    }
+  }
+
+  const sortMetric = config.sortBy && metricIds.includes(config.sortBy) ? config.sortBy : primaryMetric;
+  rows.sort((a, b) =>
+    config.sortOrder === "asc"
+      ? (a.values[sortMetric] || 0) - (b.values[sortMetric] || 0)
+      : (b.values[sortMetric] || 0) - (a.values[sortMetric] || 0)
+  );
+
+  return config.limit ? rows.slice(0, config.limit) : rows;
+}
+
+/**
+ * Breakdown over time: one row per date, one series per dimension value.
+ * Backs the stacked bar and heatmap widgets, which need both axes at once.
+ */
+export function queryBreakdownOverTime(
+  records: RawDailyRecord[],
+  config: WidgetDataConfig,
+  ctx: QueryContext = {},
+  dimension: BreakdownDimension = "platform",
+  maxSeries = 6
+): { data: Record<string, string | number>[]; series: string[] } {
+  const win = resolveWindows(config, ctx);
+  const scoped = scopeRecords(records, config, ctx, win.startStr, win.endStr);
+  const metricId = config.metricIds[0] || "spend";
+
+  // Only the top N dimension values get their own series - beyond that a
+  // stacked chart becomes unreadable, so the tail is folded into "Other"
+  // rather than silently dropped (which would make the totals wrong).
+  const topRows = queryBreakdown(records, config, ctx, dimension);
+  const topKeys = topRows.slice(0, maxSeries).map((r) => r.key);
+  const hasOther = topRows.length > maxSeries;
+
+  const byDate = new Map<string, Record<string, string | number>>();
+  for (const r of scoped) {
+    const row = byDate.get(r.date) || { date: r.date.slice(5) };
+    const rawKey = recordDimensionValue(r, dimension) || "(not set)";
+    const key = topKeys.includes(rawKey) ? rawKey : "Other";
+    row[key] = ((row[key] as number) || 0) + getRawFieldValue(r, metricId);
+    byDate.set(r.date, row);
+  }
+
+  const data = Array.from(byDate.entries())
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([, row]) => row);
+
+  return { data, series: hasOther ? [...topKeys, "Other"] : topKeys };
 }
 
 // Fields that are rates/scores, not counts - averaging across the records
@@ -344,18 +642,23 @@ function getRawFieldValue(r: RawDailyRecord, metricId: string): number {
 export function queryContentPosts(
   posts: ContentPost[],
   config: WidgetDataConfig,
-  globalDateRange: DateRangePreset = "last_30_days"
+  ctx: QueryContext = {}
 ): ContentPost[] {
-  const selectedRange =
-    config.dateRangeMode === "override" && config.customDateRange
-      ? config.customDateRange
-      : globalDateRange;
-  const { startDate, endDate } = getDateBounds(selectedRange);
+  const isOverride = config.dateRangeMode === "override" && !!config.customDateRange;
+  const preset = isOverride ? config.customDateRange! : ctx.globalDateRange || "last_30_days";
+  const bounds = isOverride ? config.customDateBounds : ctx.globalCustomBounds;
+  const { startDate, endDate } = getDateBounds(preset, bounds);
+
+  // Compare on the calendar day, not the instant - a post published at 9pm on
+  // the range's last day is inside the range, but its timestamp is after that
+  // day's midnight-anchored Date object.
+  const startStr = toDateStr(startDate);
+  const endStr = toDateStr(endDate);
 
   const filtered = posts.filter((p) => {
     if (config.platform !== "all" && p.platform !== config.platform) return false;
-    const postedAt = new Date(p.postedAt);
-    return postedAt >= startDate && postedAt <= endDate;
+    const postedDay = p.postedAt.slice(0, 10);
+    return postedDay >= startStr && postedDay <= endStr;
   });
 
   const sortKey = (config.sortBy as keyof ContentPost["metrics"]) || "reach";

@@ -1,8 +1,18 @@
 "use client";
 
 import React, { useState } from "react";
-import { WidgetConfig, WidgetType, Platform, DateRangePreset } from "@/types";
+import {
+  WidgetConfig,
+  WidgetType,
+  Platform,
+  DateRangePreset,
+  CustomDateRange,
+  ComparisonPreset,
+  BreakdownDimension,
+} from "@/types";
 import { getAllMetrics } from "@/lib/metric-catalog";
+import { getDateBounds, toDateStr } from "@/lib/query-engine";
+import { DATE_PRESET_OPTIONS, COMPARISON_OPTIONS, BREAKDOWN_OPTIONS } from "@/lib/date-presets";
 import { X, Check } from "lucide-react";
 
 interface Props {
@@ -20,13 +30,34 @@ const WIDGET_TYPES: { type: WidgetType; label: string }[] = [
   { type: "line_chart", label: "Line Chart" },
   { type: "area_chart", label: "Area Chart" },
   { type: "bar_chart", label: "Bar Chart" },
+  { type: "stacked_bar", label: "Stacked Bar" },
+  { type: "metric_comparison", label: "Multi-Metric Trend" },
   { type: "donut_chart", label: "Donut Share Chart" },
-  { type: "table", label: "Data Table" },
   { type: "campaign_table", label: "Campaign Table" },
+  { type: "ranking", label: "Ranked List" },
+  { type: "heatmap", label: "Heatmap Grid" },
+  { type: "table", label: "Metric Table" },
   { type: "content_table", label: "Content Post Grid" },
-  { type: "ai_insight", label: "AI Diagnostic Insight" },
+  { type: "timeline", label: "Annotation Timeline" },
   { type: "text", label: "Text / Client Notes" },
+  { type: "image_logo", label: "Image / Logo" },
+  { type: "ai_insight", label: "AI Diagnostic Insight" },
 ];
+
+/** Widget types whose body is grouped by a dimension rather than aggregated. */
+const BREAKDOWN_TYPES = new Set<WidgetType>(["campaign_table", "ranking", "heatmap", "stacked_bar"]);
+/** Widget types that plot a series and therefore support a comparison period. */
+const COMPARISON_TYPES = new Set<WidgetType>([
+  "kpi_card",
+  "number",
+  "percentage",
+  "comparison",
+  "table",
+  "line_chart",
+  "area_chart",
+  "bar_chart",
+  "metric_comparison",
+]);
 
 export function WidgetConfigDrawer({ widget, isOpen, onClose, onSave }: Props) {
   // Lazy init is safe here: this drawer only ever mounts after a user
@@ -43,8 +74,29 @@ export function WidgetConfigDrawer({ widget, isOpen, onClose, onSave }: Props) {
   const [customDateRange, setCustomDateRange] = useState<DateRangePreset>(
     widget.dataConfig.customDateRange || "last_30_days"
   );
+  const [customBounds, setCustomBounds] = useState<CustomDateRange>(
+    widget.dataConfig.customDateBounds || {
+      start: toDateStr(getDateBounds("last_30_days").startDate),
+      end: toDateStr(getDateBounds("last_30_days").endDate),
+    }
+  );
+  const [comparisonMode, setComparisonMode] = useState<ComparisonPreset>(
+    widget.dataConfig.comparisonMode || "previous_period"
+  );
+  const [breakdown, setBreakdown] = useState<BreakdownDimension>(
+    widget.dataConfig.breakdown || "campaign"
+  );
+  const [limit, setLimit] = useState<string>(
+    widget.dataConfig.limit != null ? String(widget.dataConfig.limit) : ""
+  );
+  const [noteText, setNoteText] = useState(widget.displayConfig?.noteText || "");
+  const [imageUrl, setImageUrl] = useState(widget.displayConfig?.imageUrl || "");
 
   if (!isOpen) return null;
+
+  const showsBreakdown = BREAKDOWN_TYPES.has(widgetType);
+  const showsComparison = COMPARISON_TYPES.has(widgetType);
+  const showsMetrics = widgetType !== "text" && widgetType !== "image_logo" && widgetType !== "timeline";
 
   const toggleMetric = (id: string) => {
     if (selectedMetrics.includes(id)) {
@@ -57,6 +109,7 @@ export function WidgetConfigDrawer({ widget, isOpen, onClose, onSave }: Props) {
   };
 
   const handleSave = () => {
+    const parsedLimit = parseInt(limit, 10);
     onSave({
       ...widget,
       title,
@@ -67,6 +120,15 @@ export function WidgetConfigDrawer({ widget, isOpen, onClose, onSave }: Props) {
         metricIds: selectedMetrics,
         dateRangeMode,
         customDateRange,
+        customDateBounds: customDateRange === "custom" ? customBounds : undefined,
+        comparisonMode,
+        breakdown,
+        limit: Number.isFinite(parsedLimit) && parsedLimit > 0 ? parsedLimit : undefined,
+      },
+      displayConfig: {
+        ...widget.displayConfig,
+        noteText: noteText || undefined,
+        imageUrl: imageUrl || undefined,
       },
     });
     onClose();
@@ -132,7 +194,84 @@ export function WidgetConfigDrawer({ widget, isOpen, onClose, onSave }: Props) {
               </select>
             </div>
 
+            {/* Breakdown dimension - only for widgets that group by entity */}
+            {showsBreakdown && (
+              <div>
+                <label className="block font-bold uppercase text-neutral-800 mb-1">Break Down By</label>
+                <select
+                  value={breakdown}
+                  onChange={(e) => setBreakdown(e.target.value as BreakdownDimension)}
+                  className="w-full p-2 border border-neutral-300 focus:border-black focus:outline-none bg-milk-bg"
+                >
+                  {BREAKDOWN_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-[10px] text-neutral-500 mt-1 font-sans">
+                  One row per {BREAKDOWN_OPTIONS.find((o) => o.value === breakdown)?.label.toLowerCase()}. Organic
+                  rows have no campaign, so they group under &quot;(not set)&quot;.
+                </p>
+              </div>
+            )}
+
+            {/* Row cap for breakdown widgets */}
+            {showsBreakdown && (
+              <div>
+                <label className="block font-bold uppercase text-neutral-800 mb-1">Row Limit (optional)</label>
+                <input
+                  type="number"
+                  min={1}
+                  value={limit}
+                  onChange={(e) => setLimit(e.target.value)}
+                  placeholder="All rows"
+                  className="w-full p-2 border border-neutral-300 focus:border-black focus:outline-none bg-milk-bg"
+                />
+              </div>
+            )}
+
+            {/* Image URL - image_logo widgets only */}
+            {widgetType === "image_logo" && (
+              <div>
+                <label className="block font-bold uppercase text-neutral-800 mb-1">Image URL</label>
+                <input
+                  type="url"
+                  value={imageUrl}
+                  onChange={(e) => setImageUrl(e.target.value)}
+                  placeholder="https://example.com/logo.png"
+                  className="w-full p-2 border border-neutral-300 focus:border-black focus:outline-none bg-milk-bg font-sans text-sm"
+                />
+              </div>
+            )}
+
+            {/* Note text - text widgets, and as a caption on anything else */}
+            {widgetType === "text" ? (
+              <div>
+                <label className="block font-bold uppercase text-neutral-800 mb-1">Note Text</label>
+                <textarea
+                  value={noteText}
+                  onChange={(e) => setNoteText(e.target.value)}
+                  rows={6}
+                  placeholder="Commentary for the client..."
+                  className="w-full p-2 border border-neutral-300 focus:border-black focus:outline-none bg-milk-bg font-sans text-sm resize-y"
+                />
+              </div>
+            ) : (
+              <div>
+                <label className="block font-bold uppercase text-neutral-800 mb-1">Footnote (optional)</label>
+                <input
+                  type="text"
+                  value={noteText}
+                  onChange={(e) => setNoteText(e.target.value)}
+                  placeholder="Caption shown under this widget"
+                  className="w-full p-2 border border-neutral-300 focus:border-black focus:outline-none bg-milk-bg font-sans text-sm"
+                />
+              </div>
+            )}
+
             {/* Metric Selection Picker */}
+            {showsMetrics && (
             <div>
               <label className="block font-bold uppercase text-neutral-800 mb-1">Select Metric(s) from Catalog</label>
               <div className="max-h-48 overflow-y-auto border border-neutral-200 p-2 space-y-1 bg-neutral-50">
@@ -157,7 +296,31 @@ export function WidgetConfigDrawer({ widget, isOpen, onClose, onSave }: Props) {
                   );
                 })}
               </div>
+              {showsBreakdown && selectedMetrics.length > 0 && (
+                <p className="text-[10px] text-neutral-500 mt-1 font-sans">
+                  Rows are sorted by the first selected metric.
+                </p>
+              )}
             </div>
+            )}
+
+            {/* Comparison period */}
+            {showsComparison && (
+              <div>
+                <label className="block font-bold uppercase text-neutral-800 mb-1">Compare Against</label>
+                <select
+                  value={comparisonMode}
+                  onChange={(e) => setComparisonMode(e.target.value as ComparisonPreset)}
+                  className="w-full p-2 border border-neutral-300 focus:border-black focus:outline-none bg-milk-bg"
+                >
+                  {COMPARISON_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
 
             {/* Date Range Mode */}
             <div>
@@ -189,20 +352,45 @@ export function WidgetConfigDrawer({ widget, isOpen, onClose, onSave }: Props) {
             </div>
 
             {dateRangeMode === "override" && (
-              <div>
-                <label className="block font-bold uppercase text-neutral-800 mb-1">Custom Widget Date Range</label>
-                <select
-                  value={customDateRange}
-                  onChange={(e) => setCustomDateRange(e.target.value as DateRangePreset)}
-                  className="w-full p-2 border border-neutral-300 focus:border-black focus:outline-none bg-milk-bg"
-                >
-                  <option value="last_7_days">Last 7 Days</option>
-                  <option value="last_14_days">Last 14 Days</option>
-                  <option value="last_30_days">Last 30 Days</option>
-                  <option value="last_90_days">Last 90 Days</option>
-                  <option value="this_month">This Month</option>
-                  <option value="previous_month">Previous Month</option>
-                </select>
+              <div className="space-y-2">
+                <div>
+                  <label className="block font-bold uppercase text-neutral-800 mb-1">Widget Date Range</label>
+                  <select
+                    value={customDateRange}
+                    onChange={(e) => setCustomDateRange(e.target.value as DateRangePreset)}
+                    className="w-full p-2 border border-neutral-300 focus:border-black focus:outline-none bg-milk-bg"
+                  >
+                    {DATE_PRESET_OPTIONS.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                {customDateRange === "custom" && (
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="block font-bold uppercase text-neutral-800 mb-1">From</label>
+                      <input
+                        type="date"
+                        value={customBounds.start}
+                        max={customBounds.end}
+                        onChange={(e) => setCustomBounds({ ...customBounds, start: e.target.value })}
+                        className="w-full p-2 border border-neutral-300 focus:border-black focus:outline-none bg-milk-bg"
+                      />
+                    </div>
+                    <div>
+                      <label className="block font-bold uppercase text-neutral-800 mb-1">To</label>
+                      <input
+                        type="date"
+                        value={customBounds.end}
+                        min={customBounds.start}
+                        onChange={(e) => setCustomBounds({ ...customBounds, end: e.target.value })}
+                        className="w-full p-2 border border-neutral-300 focus:border-black focus:outline-none bg-milk-bg"
+                      />
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>
