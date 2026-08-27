@@ -97,7 +97,7 @@ export function ClientPortalShell({ clientId }: { clientId: string }) {
 
   return (
     <div className="min-h-screen bg-milk-bg flex flex-col">
-      <header className="bg-black text-white border-b border-neutral-800 px-6 py-3 flex items-center justify-between gap-4">
+      <header className="print:hidden bg-black text-white border-b border-neutral-800 px-6 py-3 flex items-center justify-between gap-4">
         <div className="flex items-center gap-4">
           {agency?.logoUrl ? (
             // eslint-disable-next-line @next/next/no-img-element

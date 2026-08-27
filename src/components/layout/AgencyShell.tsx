@@ -133,7 +133,7 @@ export function AgencyShell({ agencyId }: { agencyId: string }) {
   return (
     <div className="min-h-screen bg-milk-bg flex flex-col overflow-x-hidden">
       {/* Editorial Header */}
-      <header className="bg-black text-white border-b border-neutral-800 px-6 py-3 flex flex-wrap items-center justify-between gap-4">
+      <header className="print:hidden bg-black text-white border-b border-neutral-800 px-6 py-3 flex flex-wrap items-center justify-between gap-4">
         {/* Brand & Client Selector */}
         <div className="flex flex-wrap items-center gap-3 sm:gap-6">
           <div className="flex items-center space-x-3">

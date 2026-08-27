@@ -268,8 +268,17 @@ export function DashboardBuilder({
 
   return (
     <div className="flex flex-col min-h-screen bg-milk-bg">
+      {/* Print-only report header - everything else in this file's control
+          bar (date picker, Export/Edit/Settings/Duplicate/Save, page tabs)
+          is an editing/admin control with no place on a client-facing PDF,
+          so the whole bar below is print:hidden and this stands in for it. */}
+      <div className="hidden print:block px-6 pt-6 pb-2">
+        <h1 className="text-2xl font-display font-black tracking-tight text-black">{currentDashboard.title}</h1>
+        <p className="text-xs font-mono text-neutral-500">{activePage.title}</p>
+      </div>
+
       {/* Top Builder Control Bar */}
-      <div className="bg-white border-b border-black px-6 py-3 flex flex-wrap items-center justify-between gap-4 sticky top-0 z-30 shadow-xs">
+      <div className="print:hidden bg-white border-b border-black px-6 py-3 flex flex-wrap items-center justify-between gap-4 sticky top-0 z-30 shadow-xs">
         <div className="flex items-center space-x-4">
           <div>
             <h1 className="text-xl font-display font-black tracking-tight text-black flex items-center gap-2">
@@ -456,7 +465,7 @@ export function DashboardBuilder({
                       {section.title}
                     </h2>
                     {isEditMode && (
-                      <div className="flex items-center gap-3 text-xs font-mono">
+                      <div className="print:hidden flex items-center gap-3 text-xs font-mono">
                         <button
                           onClick={() => setAddWidgetTargetSection(section.id)}
                           className="text-neutral-600 hover:text-black font-bold"
@@ -490,7 +499,7 @@ export function DashboardBuilder({
             {isEditMode && (
               <button
                 onClick={handleAddSection}
-                className="px-3 py-1.5 text-xs font-mono font-bold border border-neutral-300 bg-white hover:border-black flex items-center gap-1.5"
+                className="print:hidden px-3 py-1.5 text-xs font-mono font-bold border border-neutral-300 bg-white hover:border-black flex items-center gap-1.5"
               >
                 <Plus className="w-3.5 h-3.5" />
                 Add Section

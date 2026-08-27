@@ -87,3 +87,16 @@
 ::-webkit-scrollbar-thumb:hover {
   background: #666666;
 }
+
+/* Export PDF (window.print()) - the off-white --bg-color reads fine on
+   screen but wastes toner and looks unintentional on paper, and a widget
+   card split across a page break looks broken, so both are forced here
+   rather than relying on print:hidden alone. */
+@media print {
+  body {
+    background: #ffffff !important;
+  }
+  .react-grid-item {
+    break-inside: avoid;
+  }
+}
