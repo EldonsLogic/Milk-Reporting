@@ -14,6 +14,8 @@ import { X, Trash2, Plus, Pencil } from "lucide-react";
 interface Props {
   clientId: string;
   annotations: Annotation[];
+  /** whether the current page has any widget that can display an annotation */
+  hasAnnotationSurface: boolean;
   onClose: () => void;
   onChanged: () => void;
 }
@@ -30,7 +32,13 @@ const CATEGORIES = [
   { value: "general", label: "General" },
 ];
 
-export function AnnotationsPanel({ clientId, annotations, onClose, onChanged }: Props) {
+export function AnnotationsPanel({
+  clientId,
+  annotations,
+  hasAnnotationSurface,
+  onClose,
+  onChanged,
+}: Props) {
   const [date, setDate] = useState(toDateStr(new Date()));
   const [title, setTitle] = useState("");
   const [note, setNote] = useState("");
@@ -96,8 +104,7 @@ export function AnnotationsPanel({ clientId, annotations, onClose, onChanged }: 
           <div>
             <h3 className="text-lg font-display font-bold uppercase tracking-tight text-black">Annotations</h3>
             <p className="text-xs font-mono text-neutral-500 mt-0.5">
-              Mark what changed on a given day. These appear as markers on time-series widgets, for you and
-              for the client.
+              Mark what changed on a given day, so a spike or drop carries the reason you already know.
             </p>
           </div>
           <button onClick={onClose} className="p-1 hover:bg-neutral-100 border border-transparent hover:border-black shrink-0">
@@ -105,7 +112,27 @@ export function AnnotationsPanel({ clientId, annotations, onClose, onChanged }: 
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="p-6 space-y-3 text-xs font-mono border-b border-neutral-200">
+        {/* Where annotations actually surface. Without this it's easy to add
+            one, see nothing change, and assume it didn't save - a KPI card
+            has no date axis to place a marker on. */}
+        <div className="mx-6 mt-4 border border-neutral-300 bg-neutral-50 p-3 font-mono text-[11px] text-neutral-700 leading-relaxed">
+          <p className="font-bold uppercase text-neutral-800 mb-1">Where these show up</p>
+          <p>
+            As dashed markers on <b>Line</b>, <b>Area</b>, <b>Bar</b> and <b>Stacked Bar</b> charts, and as a
+            dated list on the <b>Annotation Timeline</b> widget. Clients see them on the same widgets, read-only.
+          </p>
+          {!hasAnnotationSurface && (
+            <p className="mt-1.5 text-black">
+              This dashboard page has none of those widgets yet, so nothing will appear until you add one.
+            </p>
+          )}
+          <p className="mt-1.5 text-neutral-500">
+            A marker only draws on a date the chart actually plots — if there&apos;s no data in the selected
+            range, there&apos;s no axis to place it on.
+          </p>
+        </div>
+
+        <form onSubmit={handleSubmit} className="p-6 pt-4 space-y-3 text-xs font-mono border-b border-neutral-200">
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block font-bold uppercase text-neutral-800 mb-1">Date</label>

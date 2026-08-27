@@ -173,35 +173,46 @@ export function WidgetRenderer({
 }
 
 /**
- * Annotation markers on a time-series chart. Chart x-values are "MM-DD"
- * (trendData slices the year off), so annotation dates are matched in the
- * same shape - and only those inside the plotted window are drawn, since a
- * ReferenceLine at an x-value the axis doesn't contain renders at the edge
- * and reads as a real event on the wrong day.
+ * Which annotations fall on a date the chart actually plots. Chart x-values
+ * are "MM-DD" (trendData slices the year off), so dates are matched in that
+ * shape. Annotations outside the plotted window are dropped rather than
+ * clamped - a ReferenceLine at an x-value the axis doesn't contain renders
+ * at the edge and reads as a real event on the wrong day.
  */
-function annotationMarkers(annotations: Annotation[], plottedDates: string[]) {
-  if (annotations.length === 0 || plottedDates.length === 0) return null;
-  const visible = plottedDates.length;
+function visibleAnnotations(annotations: Annotation[], plottedDates: string[]) {
+  if (annotations.length === 0 || plottedDates.length === 0) return [];
+  const plotted = new Set(plottedDates);
   return annotations
     .map((a) => ({ annotation: a, x: a.date.slice(5) }))
-    .filter(({ x }) => plottedDates.includes(x))
-    .slice(0, visible)
-    .map(({ annotation, x }) => (
-      <ReferenceLine
-        key={annotation.id}
-        x={x}
-        stroke="#B3121B"
-        strokeDasharray="3 3"
-        strokeWidth={1.5}
-        label={{
-          value: annotation.title,
-          position: "top",
-          fontSize: 9,
-          fill: "#B3121B",
-          fontFamily: "monospace",
-        }}
-      />
-    ));
+    .filter(({ x }) => plotted.has(x));
+}
+
+/**
+ * Top margin a chart needs to fit annotation labels. Recharts draws a
+ * ReferenceLine label above the plot area, so without headroom the title is
+ * clipped by the container and the marker looks unlabelled.
+ */
+function chartTopMargin(hasAnnotations: boolean): number {
+  return hasAnnotations ? 20 : 5;
+}
+
+function annotationMarkers(visible: ReturnType<typeof visibleAnnotations>) {
+  return visible.map(({ annotation, x }) => (
+    <ReferenceLine
+      key={annotation.id}
+      x={x}
+      stroke="#B3121B"
+      strokeDasharray="3 3"
+      strokeWidth={1.5}
+      label={{
+        value: annotation.title,
+        position: "top",
+        fontSize: 9,
+        fill: "#B3121B",
+        fontFamily: "monospace",
+      }}
+    />
+  ));
 }
 
 function renderWidgetBody(
@@ -279,10 +290,11 @@ function renderWidgetBody(
     case "line_chart":
     case "metric_comparison": {
       const chartData = mergeTrendData(results);
+      const marks = visibleAnnotations(annotations, chartData.map((d) => String(d.date)));
       return (
         <div className="h-full w-full min-h-[140px] pt-1">
           <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={chartData} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
+            <LineChart data={chartData} margin={{ top: chartTopMargin(marks.length > 0), right: 5, left: -20, bottom: 0 }}>
               <CartesianGrid strokeDasharray="2 2" stroke="#E2E2DF" vertical={false} />
               <XAxis dataKey="date" tick={{ fontSize: 10, fill: "#666" }} tickLine={false} />
               <YAxis tick={{ fontSize: 10, fill: "#666" }} tickLine={false} />
@@ -297,7 +309,7 @@ function renderWidgetBody(
                 }}
               />
               {results.length > 1 && <Legend wrapperStyle={{ fontSize: "10px", fontFamily: "monospace" }} />}
-              {annotationMarkers(annotations, chartData.map((d) => String(d.date)))}
+              {annotationMarkers(marks)}
               {results.map((res, i) => (
                 <Line
                   key={res.metricId}
@@ -319,10 +331,11 @@ function renderWidgetBody(
 
     case "area_chart": {
       const chartData = mergeTrendData(results);
+      const marks = visibleAnnotations(annotations, chartData.map((d) => String(d.date)));
       return (
         <div className="h-full w-full min-h-[140px] pt-1">
           <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={chartData} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
+            <AreaChart data={chartData} margin={{ top: chartTopMargin(marks.length > 0), right: 5, left: -20, bottom: 0 }}>
               <defs>
                 {results.map((res, i) => (
                   <linearGradient key={res.metricId} id={`areaGrad-${res.metricId}`} x1="0" y1="0" x2="0" y2="1">
@@ -344,7 +357,7 @@ function renderWidgetBody(
                 }}
               />
               {results.length > 1 && <Legend wrapperStyle={{ fontSize: "10px", fontFamily: "monospace" }} />}
-              {annotationMarkers(annotations, chartData.map((d) => String(d.date)))}
+              {annotationMarkers(marks)}
               {results.map((res, i) => (
                 <Area
                   key={res.metricId}
@@ -365,10 +378,11 @@ function renderWidgetBody(
 
     case "bar_chart": {
       const chartData = mergeTrendData(results).slice(-10);
+      const marks = visibleAnnotations(annotations, chartData.map((d) => String(d.date)));
       return (
         <div className="h-full w-full min-h-[140px] pt-1">
           <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={chartData} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
+            <BarChart data={chartData} margin={{ top: chartTopMargin(marks.length > 0), right: 5, left: -20, bottom: 0 }}>
               <CartesianGrid strokeDasharray="2 2" stroke="#E2E2DF" vertical={false} />
               <XAxis dataKey="date" tick={{ fontSize: 10, fill: "#666" }} tickLine={false} />
               <YAxis tick={{ fontSize: 10, fill: "#666" }} tickLine={false} />
@@ -382,6 +396,7 @@ function renderWidgetBody(
                 }}
               />
               {results.length > 1 && <Legend wrapperStyle={{ fontSize: "10px", fontFamily: "monospace" }} />}
+              {annotationMarkers(marks)}
               {results.map((res, i) => (
                 <Bar
                   key={res.metricId}
@@ -437,15 +452,17 @@ function renderWidgetBody(
       if (!stacked || stacked.series.length === 0) {
         return <EmptyBody message="No data to break down for this dimension and date range." />;
       }
+      const marks = visibleAnnotations(annotations, stacked.data.map((d) => String(d.date)));
       return (
         <div className="h-full w-full min-h-[140px] pt-1">
           <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={stacked.data} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
+            <BarChart data={stacked.data} margin={{ top: chartTopMargin(marks.length > 0), right: 5, left: -20, bottom: 0 }}>
               <CartesianGrid strokeDasharray="2 2" stroke="#E2E2DF" vertical={false} />
               <XAxis dataKey="date" tick={{ fontSize: 10, fill: "#666" }} tickLine={false} />
               <YAxis tick={{ fontSize: 10, fill: "#666" }} tickLine={false} />
               <Tooltip contentStyle={TOOLTIP_STYLE} />
               <Legend wrapperStyle={{ fontSize: "10px", fontFamily: "monospace" }} />
+              {annotationMarkers(marks)}
               {stacked.series.map((key, i) => (
                 <Bar
                   key={key}

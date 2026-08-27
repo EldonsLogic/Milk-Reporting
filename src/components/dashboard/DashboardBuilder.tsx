@@ -41,6 +41,19 @@ const ReactGridLayout = WidthProvider(Responsive);
 const GRID_BREAKPOINTS = { lg: 1024, md: 768, sm: 640, xs: 0 };
 const GRID_COLS = { lg: 12, md: 8, sm: 4, xs: 1 };
 
+// Widget types that can actually display an annotation - the date-axis charts
+// that can carry a marker, plus the timeline that lists them outright. Used to
+// warn when a page has none of them, since adding an annotation and seeing
+// nothing change otherwise reads as a failed save.
+const ANNOTATION_SURFACES = new Set<WidgetType>([
+  "line_chart",
+  "metric_comparison",
+  "area_chart",
+  "bar_chart",
+  "stacked_bar",
+  "timeline",
+]);
+
 // Grouped so the list stays scannable now that every implemented widget type
 // is offered here. Previously only nine of the fifteen working types appeared,
 // leaving campaign tables, rankings and the readout variants unreachable.
@@ -743,6 +756,7 @@ export function DashboardBuilder({
         <AnnotationsPanel
           clientId={clientId}
           annotations={annotations}
+          hasAnnotationSurface={activePage.widgets.some((w) => ANNOTATION_SURFACES.has(w.widgetType))}
           onClose={() => setIsAnnotationsOpen(false)}
           onChanged={() => onAnnotationsChanged?.()}
         />
