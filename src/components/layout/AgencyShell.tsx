@@ -6,6 +6,7 @@ import { DashboardBuilder } from "@/components/dashboard/DashboardBuilder";
 import { MetricCatalogBrowser } from "@/components/data-catalog/MetricCatalogBrowser";
 import { ClientManager } from "@/components/clients/ClientManager";
 import { DataConnectionsPanel } from "@/components/clients/DataConnectionsPanel";
+import { AgencyOverview } from "@/components/agency/AgencyOverview";
 import {
   fetchClients,
   fetchDashboardsForClient,
@@ -29,6 +30,7 @@ import {
   Database,
   RefreshCw,
   Users,
+  Building2,
   Eye,
   Shield,
   LogOut,
@@ -49,7 +51,9 @@ export function AgencyShell({ agencyId }: { agencyId: string }) {
   const [clients, setClients] = useState<Client[]>([]);
   const [clientsLoading, setClientsLoading] = useState(true);
   const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<"dashboards" | "catalog" | "sync" | "clients">("dashboards");
+  const [activeTab, setActiveTab] = useState<"dashboards" | "agency" | "catalog" | "sync" | "clients">(
+    "dashboards"
+  );
   const [userRole, setUserRole] = useState<"agency_admin" | "client_viewer">("agency_admin");
 
   const [dashboards, setDashboards] = useState<Dashboard[]>([]);
@@ -284,6 +288,17 @@ export function AgencyShell({ agencyId }: { agencyId: string }) {
           {userRole === "agency_admin" && (
             <>
               <button
+                onClick={() => setActiveTab("agency")}
+                className={`px-3 py-1.5 font-bold flex items-center space-x-1.5 transition-all ${
+                  activeTab === "agency"
+                    ? "bg-milk-yellow text-black"
+                    : "text-neutral-300 hover:text-white"
+                }`}
+              >
+                <Building2 className="w-3.5 h-3.5" />
+                <span>Agency</span>
+              </button>
+              <button
                 onClick={() => setActiveTab("catalog")}
                 className={`px-3 py-1.5 font-bold flex items-center space-x-1.5 transition-all ${
                   activeTab === "catalog"
@@ -422,6 +437,17 @@ export function AgencyShell({ agencyId }: { agencyId: string }) {
               </>
             )}
           </>
+        )}
+
+        {activeTab === "agency" && (
+          <AgencyOverview
+            clients={clients}
+            agencyId={agencyId}
+            onSelectClient={(client) => {
+              setSelectedClientId(client.id);
+              setActiveTab("dashboards");
+            }}
+          />
         )}
 
         {activeTab === "catalog" && <MetricCatalogBrowser agencyId={agencyId} onCustomMetricsChanged={refreshCustomMetrics} />}

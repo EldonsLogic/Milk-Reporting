@@ -158,6 +158,18 @@ export function DashboardBuilder({
 
   const activeFilterCount = Object.values(currentDashboard.globalFilters || {}).filter((v) => v?.trim()).length;
 
+  // Human-readable range for the printed cover, so a PDF that outlives this
+  // session still says which period it covers.
+  const printRangeLabel =
+    DATE_PRESET_OPTIONS.find((o) => o.value === globalDateRange)?.label.replace("…", "") || globalDateRange;
+  const printDateSpan = useMemo(() => {
+    const { startDate, endDate } = getDateBounds(
+      globalDateRange,
+      globalDateRange === "custom" ? customBounds : undefined
+    );
+    return `${toDateStr(startDate)} — ${toDateStr(endDate)}`;
+  }, [globalDateRange, customBounds]);
+
   const changeDateRange = (preset: DateRangePreset, bounds?: CustomDateRange) => {
     setGlobalDateRange(preset);
     if (bounds) setCustomBounds(bounds);
@@ -376,13 +388,39 @@ export function DashboardBuilder({
 
   return (
     <div className="flex flex-col min-h-screen bg-milk-bg">
-      {/* Print-only report header - everything else in this file's control
-          bar (date picker, Export/Edit/Settings/Duplicate/Save, page tabs)
-          is an editing/admin control with no place on a client-facing PDF,
-          so the whole bar below is print:hidden and this stands in for it. */}
-      <div className="hidden print:block px-6 pt-6 pb-2">
-        <h1 className="text-2xl font-display font-black tracking-tight text-black">{currentDashboard.title}</h1>
-        <p className="text-xs font-mono text-neutral-500">{activePage.title}</p>
+      {/* Print-only report cover. Everything else in this file's control bar
+          (date picker, Export/Edit/Settings/Duplicate/Save, page tabs) is an
+          editing control with no place on a client-facing PDF, so the whole
+          bar below is print:hidden and this stands in for it. */}
+      <div className="hidden print:block mb-6">
+        <div className="flex items-end justify-between gap-4 border-b-2 border-black pb-3">
+          <div>
+            <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-neutral-500 mb-1">
+              Performance Report
+            </p>
+            <h1 className="text-3xl font-display font-black tracking-tight text-black leading-none">
+              {currentDashboard.title}
+            </h1>
+            <p className="font-sans text-sm text-neutral-600 mt-1">{clientName}</p>
+          </div>
+          <div className="text-right font-mono text-[10px] text-neutral-600 leading-relaxed">
+            <div className="font-bold uppercase text-black">{printRangeLabel}</div>
+            <div>{printDateSpan}</div>
+            <div className="mt-1">Generated {new Date().toLocaleDateString()}</div>
+          </div>
+        </div>
+        {activeFilterCount > 0 && (
+          <p className="font-mono text-[10px] text-neutral-600 mt-2">
+            Filtered to:{" "}
+            {Object.entries(currentDashboard.globalFilters || {})
+              .filter(([, v]) => v?.trim())
+              .map(([k, v]) => `${k} contains "${v}"`)
+              .join(" · ")}
+          </p>
+        )}
+        <h2 className="print-section-heading font-display font-bold text-base text-black mt-4">
+          {activePage.title}
+        </h2>
       </div>
 
       {/* Top Builder Control Bar */}

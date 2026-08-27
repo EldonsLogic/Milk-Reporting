@@ -14,26 +14,96 @@ function getSystemUserToken(): string {
   return token;
 }
 
+// Meta's throttling error codes. 4 and 17 are app/user rate limits, 32 is
+// the page-level limit, 613 is "calls to this api have exceeded the rate
+// limit", 80000-80006 are the per-product business-use-case limits. All are
+// transient: the right response is to wait and retry, not to mark the
+// connection failed and silently lose a day of data.
+const RATE_LIMIT_CODES = new Set([4, 17, 32, 613, 80000, 80001, 80002, 80003, 80004, 80005, 80006]);
+const TRANSIENT_CODES = new Set([1, 2]); // unknown/temporary Meta-side errors
+
+const MAX_RETRIES = 4;
+const BASE_BACKOFF_MS = 2000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * How close to Meta's per-app quota the last response reported. Meta returns
+ * this on every call as a header; reading it lets us slow down *before*
+ * getting throttled rather than only reacting to a 429.
+ */
+function usagePercent(res: Response): number {
+  const header =
+    res.headers.get("x-business-use-case-usage") ||
+    res.headers.get("x-app-usage") ||
+    res.headers.get("x-ad-account-usage");
+  if (!header) return 0;
+  try {
+    const parsed = JSON.parse(header);
+    const entries = Array.isArray(parsed) ? parsed : Object.values(parsed).flat();
+    let peak = 0;
+    for (const entry of entries as any[]) {
+      if (!entry || typeof entry !== "object") continue;
+      peak = Math.max(
+        peak,
+        Number(entry.call_count) || 0,
+        Number(entry.total_cputime) || 0,
+        Number(entry.total_time) || 0
+      );
+    }
+    return peak;
+  } catch {
+    return 0;
+  }
+}
+
+async function graphFetch(url: string, attempt = 0): Promise<any> {
+  const res = await fetch(url);
+  const json = await res.json().catch(() => ({}));
+
+  const code = json?.error?.code;
+  const isRateLimited = res.status === 429 || (code != null && RATE_LIMIT_CODES.has(code));
+  const isTransient = res.status >= 500 || (code != null && TRANSIENT_CODES.has(code));
+
+  if ((isRateLimited || isTransient) && attempt < MAX_RETRIES) {
+    // Exponential backoff with jitter. Jitter matters because a cron run
+    // syncs many connections against the same app quota - without it they'd
+    // all back off in lockstep and collide again on every retry.
+    const delay = BASE_BACKOFF_MS * Math.pow(2, attempt) + Math.random() * 1000;
+    await sleep(isRateLimited ? delay * 2 : delay);
+    return graphFetch(url, attempt + 1);
+  }
+
+  if (!res.ok || json.error) {
+    const detail = json.error?.message || `HTTP ${res.status}`;
+    const suffix = isRateLimited ? " (rate limited - retries exhausted)" : "";
+    throw new Error(`Meta API: ${detail}${suffix}`);
+  }
+
+  // Ease off voluntarily as the quota fills, so a long backfill degrades
+  // into slowness rather than into a wall of 429s partway through.
+  const usage = usagePercent(res);
+  if (usage >= 90) await sleep(5000);
+  else if (usage >= 75) await sleep(1500);
+
+  return json;
+}
+
 async function graphGet(path: string, params: Record<string, string>): Promise<any> {
   const url = new URL(`${GRAPH_BASE}${path}`);
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
   url.searchParams.set("access_token", getSystemUserToken());
-  const res = await fetch(url.toString());
-  const json = await res.json();
-  if (!res.ok || json.error) {
-    throw new Error(json.error?.message ? `Meta API: ${json.error.message}` : `Meta API error (${res.status}) for ${path}`);
-  }
-  return json;
+  return graphFetch(url.toString());
 }
 
-async function graphGetAllPages(path: string, params: Record<string, string>, maxPages = 20): Promise<any[]> {
+async function graphGetAllPages(path: string, params: Record<string, string>, maxPages = 50): Promise<any[]> {
   let json = await graphGet(path, params);
   let all: any[] = json.data || [];
   let pageCount = 1;
   while (json.paging?.next && pageCount < maxPages) {
-    const res = await fetch(json.paging.next);
-    json = await res.json();
-    if (json.error) throw new Error(`Meta API: ${json.error.message}`);
+    json = await graphFetch(json.paging.next);
     all = all.concat(json.data || []);
     pageCount++;
   }

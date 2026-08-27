@@ -12,7 +12,8 @@ import {
   deleteConnection,
 } from "@/lib/supabase-data";
 import { getErrorMessage } from "@/lib/errors";
-import { Plus, Trash2, Filter, RefreshCw, Loader2 } from "lucide-react";
+import { toDateStr } from "@/lib/query-engine";
+import { Plus, Trash2, Filter, RefreshCw, Loader2, History } from "lucide-react";
 
 const REAL_INGESTION_PLATFORMS: Platform[] = ["meta", "facebook_page", "instagram"];
 
@@ -158,6 +159,45 @@ export function DataConnectionsPanel({ client, onChanged }: Props) {
     await deleteConnection(connectionId);
     await load();
     onChanged();
+  };
+
+  /**
+   * Pulls an explicit historical window rather than the default trailing
+   * few days - what a newly onboarded client needs on day one. Runs through
+   * the same ingest path, so it's logged and rate-limited identically.
+   */
+  const handleBackfill = async (connectionId: string) => {
+    const since = prompt(
+      "Backfill from which date? (yyyy-mm-dd)\n\nMeta retains roughly 37 months of ad insights; organic Page/IG insights are shorter.",
+      toDateStr(new Date(Date.now() - 365 * 24 * 60 * 60 * 1000))
+    );
+    if (!since) return;
+    const until = prompt("Backfill until which date? (yyyy-mm-dd)", toDateStr(new Date(Date.now() - 86400000)));
+    if (!until) return;
+
+    setSyncingId(connectionId);
+    setSyncMessages((prev) => ({ ...prev, [connectionId]: "Backfilling — this can take a while…" }));
+    try {
+      const res = await authedFetch("/api/ingest", {
+        method: "POST",
+        body: JSON.stringify({ connectionId, backfill: { since, until } }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || "Backfill failed");
+      const detail = json.details?.[0];
+      setSyncMessages((prev) => ({
+        ...prev,
+        [connectionId]:
+          detail?.status === "error"
+            ? detail.error
+            : `Backfilled ${detail?.recordsSynced ?? 0} day(s) from ${since} to ${until}.`,
+      }));
+    } catch (err) {
+      setSyncMessages((prev) => ({ ...prev, [connectionId]: getErrorMessage(err, "Backfill failed") }));
+    } finally {
+      setSyncingId(null);
+      await load();
+    }
   };
 
   const handleSyncNow = async (connectionId: string) => {
@@ -381,15 +421,26 @@ export function DataConnectionsPanel({ client, onChanged }: Props) {
                       {conn.syncStatus}
                     </span>
                     {REAL_INGESTION_PLATFORMS.includes(conn.platform) && (
-                      <button
-                        onClick={() => handleSyncNow(conn.id)}
-                        disabled={syncingId === conn.id}
-                        title="Pull the latest data for this connection now"
-                        className="text-neutral-600 hover:text-black flex items-center gap-1 disabled:opacity-50"
-                      >
-                        {syncingId === conn.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
-                        Sync Now
-                      </button>
+                      <>
+                        <button
+                          onClick={() => handleSyncNow(conn.id)}
+                          disabled={syncingId === conn.id}
+                          title="Pull the latest data for this connection now"
+                          className="text-neutral-600 hover:text-black flex items-center gap-1 disabled:opacity-50"
+                        >
+                          {syncingId === conn.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+                          Sync Now
+                        </button>
+                        <button
+                          onClick={() => handleBackfill(conn.id)}
+                          disabled={syncingId === conn.id}
+                          title="Pull a specific historical date range"
+                          className="text-neutral-600 hover:text-black flex items-center gap-1 disabled:opacity-50"
+                        >
+                          <History className="w-3.5 h-3.5" />
+                          Backfill
+                        </button>
+                      </>
                     )}
                     <button
                       onClick={() => (expandedId === conn.id ? setExpandedId(null) : openScopeEditor(conn))}

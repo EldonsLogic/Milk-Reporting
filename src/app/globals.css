@@ -88,15 +88,77 @@
   background: #666666;
 }
 
-/* Export PDF (window.print()) - the off-white --bg-color reads fine on
-   screen but wastes toner and looks unintentional on paper, and a widget
-   card split across a page break looks broken, so both are forced here
-   rather than relying on print:hidden alone. */
+/* ==================================================================
+   Export PDF
+   The report is printed from the live dashboard rather than rendered
+   server-side, so these rules are what turn it from "a screenshot of an
+   app" into a document: real margins, a running header/footer, page
+   breaks that never bisect a widget, and a cover block.
+   ================================================================== */
+
+@page {
+  size: A4;
+  margin: 14mm 12mm 16mm;
+}
+
 @media print {
   body {
     background: #ffffff !important;
   }
+
+  /* Widgets are absolutely positioned by react-grid-layout, which paginates
+     badly - a card can straddle a page boundary or overlap the one after it.
+     Unsetting the positioning lets them flow as blocks the pagination can
+     actually break between. */
+  .react-grid-layout {
+    height: auto !important;
+    position: static !important;
+    display: grid !important;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8mm;
+  }
+
   .react-grid-item {
+    position: static !important;
+    transform: none !important;
+    width: auto !important;
+    /* Tall enough to read, short enough that two rows fit a page. */
+    height: 62mm !important;
     break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  /* A widget explicitly sized full-width on screen keeps that emphasis. */
+  .react-grid-item.print-full {
+    grid-column: 1 / -1;
+  }
+
+  /* Section headings should introduce the widgets under them, not end a page. */
+  h2,
+  .print-section-heading {
+    break-after: avoid;
+    page-break-after: avoid;
+  }
+
+  .print-page-break {
+    break-before: page;
+    page-break-before: always;
+  }
+
+  /* Charts render to canvas/SVG; without this they can print blank or
+     washed out in browsers that strip backgrounds by default. */
+  * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  a {
+    text-decoration: none;
+    color: inherit;
+  }
+
+  /* Link URLs are noise in a client report - the permalink is on the tile. */
+  a[href]::after {
+    content: none !important;
   }
 }
