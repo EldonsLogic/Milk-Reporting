@@ -9,11 +9,12 @@ import {
   fetchContentPosts,
   fetchVisibleCustomMetrics,
   fetchAnnotations,
+  fetchClientCurrency,
   saveDashboard,
   Annotation,
 } from "@/lib/supabase-data";
 import { setCustomMetricsCache } from "@/lib/metric-catalog";
-import { getDateBounds, toDateStr } from "@/lib/query-engine";
+import { getDateBounds, toDateStr, setDisplayCurrency } from "@/lib/query-engine";
 import { DateRangePreset, CustomDateRange } from "@/types";
 import { DashboardBuilder } from "@/components/dashboard/DashboardBuilder";
 import { useAuth } from "@/lib/auth-context";
@@ -92,6 +93,7 @@ export function ClientPortalShell({ clientId }: { clientId: string }) {
           fetchAnnotations(clientId),
         ]);
         if (!active) return;
+        setDisplayCurrency(await fetchClientCurrency(clientId));
         setCustomMetricsCache(customMetrics);
         setDashboard(dashboards.find((d) => d.isDefault) || dashboards[0] || null);
         setRecords(recordList);

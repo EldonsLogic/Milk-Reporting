@@ -8,6 +8,8 @@ import {
   fetchInstagramInsights,
   fetchInstagramFollowerCount,
   fetchInstagramMedia,
+  findPageForInstagramAccount,
+  fetchAdAccountCurrency,
 } from "@/lib/meta-api";
 
 type SupabaseAdmin = ReturnType<typeof getSupabaseAdmin>;
@@ -95,6 +97,20 @@ async function syncConnection(
     const scope = conn.scope_filters || {};
     const rows = await fetchMetaAdInsights(conn.external_account_id, since, until, scope);
 
+    // Stamp the account's reporting currency on the connection. Done here
+    // rather than only at connection-creation so existing connections
+    // (and any created before currency was captured) heal on their next
+    // sync instead of silently formatting SAR spend as dollars.
+    if (!conn.currency) {
+      try {
+        const currency = await fetchAdAccountCurrency(conn.external_account_id);
+        if (currency) await supabaseAdmin.from("platform_connections").update({ currency }).eq("id", conn.id);
+      } catch {
+        // Non-fatal: a missing currency degrades to the default, it should
+        // never fail an otherwise good sync.
+      }
+    }
+
     const { error: delError } = await supabaseAdmin
       .from("paid_daily_metrics")
       .delete()
@@ -145,15 +161,20 @@ async function syncConnection(
   }
 
   if (conn.platform === "facebook_page" || conn.platform === "instagram") {
-    const dailyRows =
-      conn.platform === "facebook_page"
-        ? await fetchFacebookPageInsights(conn.external_account_id, since, until)
-        : await fetchInstagramInsights(conn.external_account_id, since, until);
+    const isPage = conn.platform === "facebook_page";
+    // Instagram is reached through its connected Page, whose access token
+    // every IG call requires. Connections only store the IG account id, so
+    // the parent Page is resolved automatically rather than being another
+    // thing the agency has to configure.
+    const igParentPageId = isPage ? undefined : (await findPageForInstagramAccount(conn.external_account_id)) || undefined;
 
-    const followerCount =
-      conn.platform === "facebook_page"
-        ? await fetchFacebookPageFollowerCount(conn.external_account_id)
-        : await fetchInstagramFollowerCount(conn.external_account_id);
+    const dailyRows = isPage
+      ? await fetchFacebookPageInsights(conn.external_account_id, since, until)
+      : await fetchInstagramInsights(conn.external_account_id, since, until, igParentPageId);
+
+    const followerCount = isPage
+      ? await fetchFacebookPageFollowerCount(conn.external_account_id)
+      : await fetchInstagramFollowerCount(conn.external_account_id, igParentPageId);
     // Meta only exposes a live follower-count snapshot, not a historical
     // daily series, so it's stamped onto the most recent day in this batch
     // rather than backfilled across every day in the range.
@@ -192,10 +213,9 @@ async function syncConnection(
       if (error) throw error;
     }
 
-    const contentItems =
-      conn.platform === "facebook_page"
-        ? await fetchFacebookPagePosts(conn.external_account_id, since, until)
-        : await fetchInstagramMedia(conn.external_account_id, since, until);
+    const contentItems = isPage
+      ? await fetchFacebookPagePosts(conn.external_account_id, since, until)
+      : await fetchInstagramMedia(conn.external_account_id, since, until, igParentPageId);
 
     // Scope filter: when the agency has pinned this connection to specific
     // posts, everything else is dropped rather than stored and hidden later.

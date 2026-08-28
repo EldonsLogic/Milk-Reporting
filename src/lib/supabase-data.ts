@@ -116,6 +116,8 @@ export interface ConnectionRow {
   scopeFilters: ScopeFilters;
   syncStatus: "active" | "paused" | "error";
   lastSyncedAt: string | null;
+  /** ISO 4217 reported by the platform; null for organic connections */
+  currency: string | null;
 }
 
 function mapConnectionRow(row: Record<string, any>): ConnectionRow {
@@ -129,7 +131,25 @@ function mapConnectionRow(row: Record<string, any>): ConnectionRow {
     scopeFilters: row.scope_filters || {},
     syncStatus: row.sync_status,
     lastSyncedAt: row.last_synced_at,
+    currency: row.currency || null,
   };
+}
+
+/**
+ * The currency a client's spend should be shown in - taken from whichever
+ * paid connection reports one. Where a client somehow has accounts in two
+ * currencies the first is used rather than silently adding riyals to
+ * dollars; mixing them into one total would be worse than picking one.
+ */
+export async function fetchClientCurrency(clientId: string): Promise<string | null> {
+  const { data, error } = await supabase
+    .from("platform_connections")
+    .select("currency")
+    .eq("client_id", clientId)
+    .not("currency", "is", null)
+    .limit(1);
+  if (error) return null;
+  return data?.[0]?.currency || null;
 }
 
 export async function fetchConnections(clientId: string): Promise<ConnectionRow[]> {

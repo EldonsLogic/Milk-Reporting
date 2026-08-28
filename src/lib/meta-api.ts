@@ -91,15 +91,20 @@ async function graphFetch(url: string, attempt = 0): Promise<any> {
   return json;
 }
 
-async function graphGet(path: string, params: Record<string, string>): Promise<any> {
+async function graphGet(path: string, params: Record<string, string>, token?: string): Promise<any> {
   const url = new URL(`${GRAPH_BASE}${path}`);
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
-  url.searchParams.set("access_token", getSystemUserToken());
+  url.searchParams.set("access_token", token || getSystemUserToken());
   return graphFetch(url.toString());
 }
 
-async function graphGetAllPages(path: string, params: Record<string, string>, maxPages = 50): Promise<any[]> {
-  let json = await graphGet(path, params);
+async function graphGetAllPages(
+  path: string,
+  params: Record<string, string>,
+  maxPages = 50,
+  token?: string
+): Promise<any[]> {
+  let json = await graphGet(path, params, token);
   let all: any[] = json.data || [];
   let pageCount = 1;
   while (json.paging?.next && pageCount < maxPages) {
@@ -108,6 +113,58 @@ async function graphGetAllPages(path: string, params: Record<string, string>, ma
     pageCount++;
   }
   return all;
+}
+
+/**
+ * Page Insights and the Page's own post/media edges reject a System User
+ * token outright - Meta answers "(#190) This method must be called with a
+ * Page Access Token". The System User token can mint one per Page it has
+ * been granted, which is what this does.
+ *
+ * Cached per Page for the lifetime of the process: a sync touches the same
+ * Page for its daily insights, its posts, and every per-post insight call,
+ * and re-minting the token each time is a wasted round trip against the same
+ * rate limit the real data needs.
+ */
+const pageTokenCache = new Map<string, string>();
+
+async function getPageAccessToken(pageId: string): Promise<string> {
+  const cached = pageTokenCache.get(pageId);
+  if (cached) return cached;
+
+  const json = await graphGet(`/${pageId}`, { fields: "access_token" });
+  const token = json?.access_token;
+  if (!token) {
+    throw new Error(
+      `Meta API: no Page access token available for Page ${pageId}. The System User needs the Page assigned as an asset with pages_read_engagement.`
+    );
+  }
+  pageTokenCache.set(pageId, token);
+  return token;
+}
+
+/**
+ * Meta rejects Page Insights queries spanning more than ~90 days with a bare
+ * "Invalid parameter", so a long backfill has to be issued as several
+ * requests. Splits [since, until] into consecutive chunks no longer than
+ * `maxDays`.
+ */
+function splitDateRange(since: string, until: string, maxDays = 80): { since: string; until: string }[] {
+  const start = new Date(`${since}T00:00:00Z`);
+  const end = new Date(`${until}T00:00:00Z`);
+  if (!(start <= end)) return [];
+
+  const chunks: { since: string; until: string }[] = [];
+  let cursor = start;
+  while (cursor <= end) {
+    const chunkEnd = new Date(cursor);
+    chunkEnd.setUTCDate(chunkEnd.getUTCDate() + maxDays - 1);
+    const cappedEnd = chunkEnd > end ? end : chunkEnd;
+    chunks.push({ since: cursor.toISOString().slice(0, 10), until: cappedEnd.toISOString().slice(0, 10) });
+    cursor = new Date(cappedEnd);
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+  return chunks;
 }
 
 function sumActions(actions: { action_type: string; value: string }[] | undefined, types: string[]): number {
@@ -125,6 +182,8 @@ export interface DiscoveredAdAccount {
   id: string; // "act_123..." - already in the shape paid insights calls expect
   name: string;
   accountStatus: number;
+  /** ISO 4217 the account reports spend in - never assume USD */
+  currency: string | null;
 }
 
 export interface DiscoveredPage {
@@ -138,10 +197,40 @@ export interface DiscoveredPage {
 // granted in Business Manager - no need to know the Business Manager ID.
 export async function discoverAdAccounts(): Promise<DiscoveredAdAccount[]> {
   const rows = await graphGetAllPages("/me/adaccounts", {
-    fields: "id,name,account_id,account_status",
+    fields: "id,name,account_id,account_status,currency",
     limit: "200",
   });
-  return rows.map((r) => ({ id: r.id, name: r.name || r.account_id, accountStatus: r.account_status }));
+  return rows.map((r) => ({
+    id: r.id,
+    name: r.name || r.account_id,
+    accountStatus: r.account_status,
+    currency: r.currency || null,
+  }));
+}
+
+/** Currency for one ad account, used to stamp a connection at sync time. */
+export async function fetchAdAccountCurrency(adAccountId: string): Promise<string | null> {
+  const json = await graphGet(`/${adAccountId}`, { fields: "currency" });
+  return json?.currency || null;
+}
+
+/**
+ * An Instagram Business Account is reached through the Page it's connected
+ * to, and every IG call needs that Page's access token. Connections store
+ * only the IG account id, so the parent Page is resolved here by scanning
+ * the Pages this System User can see. Cached per IG account for the process
+ * lifetime - it's a stable relationship and the scan is a paged call.
+ */
+const igParentPageCache = new Map<string, string | null>();
+
+export async function findPageForInstagramAccount(igUserId: string): Promise<string | null> {
+  const cached = igParentPageCache.get(igUserId);
+  if (cached !== undefined) return cached;
+
+  const pages = await discoverPages();
+  const parent = pages.find((p) => p.instagramAccount?.id === igUserId)?.id || null;
+  igParentPageCache.set(igUserId, parent);
+  return parent;
 }
 
 export async function discoverPages(): Promise<DiscoveredPage[]> {
@@ -320,12 +409,27 @@ function emptyOrganicRow(date: string): OrganicDailyRow {
   };
 }
 
+/**
+ * Facebook Page daily metrics, verified against a live Page on v21.0.
+ *
+ * Meta retired most of the Page insights catalogue: page_impressions,
+ * page_impressions_unique, page_posts_impressions, page_engaged_users,
+ * page_fans, page_fan_adds and page_fan_removes all now return
+ * "(#100) The value must be a valid insights metric". Because Meta rejects
+ * the ENTIRE request when any single metric in it is invalid, keeping a
+ * retired name here doesn't degrade one field - it fails the whole Page
+ * sync. Only add a metric to this map after confirming it against a real
+ * Page.
+ *
+ * Consequence worth stating plainly: Facebook Page reach and impressions no
+ * longer exist in the API at all, so accountsReached / postImpressions /
+ * postReach stay zero for facebook_page. That is a platform limitation, not
+ * a gap in ingestion.
+ */
 const FB_METRIC_MAP: Record<string, keyof OrganicDailyRow> = {
-  page_fan_adds: "followersGained",
-  page_fan_removes: "followersLost",
-  page_impressions_unique: "accountsReached",
-  page_engaged_users: "accountsEngaged",
-  page_posts_impressions: "postImpressions",
+  page_daily_follows_unique: "followersGained",
+  page_daily_unfollows_unique: "followersLost",
+  page_views_total: "profileVisits",
   page_post_engagements: "postEngagements",
 };
 
@@ -340,51 +444,81 @@ async function fetchInsightsByDate(
   metrics: Record<string, keyof OrganicDailyRow>,
   since: string,
   until: string,
-  extraParams: Record<string, string> = {}
+  extraParams: Record<string, string> = {},
+  token?: string
 ): Promise<Map<string, OrganicDailyRow>> {
   const byDate = new Map<string, OrganicDailyRow>();
-  const json = await graphGet(path, {
-    metric: Object.keys(metrics).join(","),
-    period: "day",
-    since,
-    until,
-    ...extraParams,
-  });
-  for (const series of json.data || []) {
-    const field = metrics[series.name];
-    if (!field) continue;
-    for (const point of series.values || []) {
-      const date = String(point.end_time).slice(0, 10);
-      const row = byDate.get(date) || emptyOrganicRow(date);
-      (row[field] as number) = typeof point.value === "number" ? point.value : 0;
-      byDate.set(date, row);
+
+  // Chunked because Meta caps an insights query at roughly 90 days; a
+  // 12-month backfill in one request comes back as "Invalid parameter".
+  for (const chunk of splitDateRange(since, until)) {
+    const json = await graphGet(
+      path,
+      {
+        metric: Object.keys(metrics).join(","),
+        period: "day",
+        since: chunk.since,
+        until: chunk.until,
+        ...extraParams,
+      },
+      token
+    );
+    for (const series of json.data || []) {
+      const field = metrics[series.name];
+      if (!field) continue;
+      for (const point of series.values || []) {
+        const date = String(point.end_time).slice(0, 10);
+        const row = byDate.get(date) || emptyOrganicRow(date);
+        (row[field] as number) = typeof point.value === "number" ? point.value : 0;
+        byDate.set(date, row);
+      }
     }
   }
   return byDate;
 }
 
 export async function fetchFacebookPageInsights(pageId: string, since: string, until: string): Promise<OrganicDailyRow[]> {
-  const byDate = await fetchInsightsByDate(`/${pageId}/insights`, FB_METRIC_MAP, since, until);
+  const pageToken = await getPageAccessToken(pageId);
+  const byDate = await fetchInsightsByDate(`/${pageId}/insights`, FB_METRIC_MAP, since, until, {}, pageToken);
   return Array.from(byDate.values()).sort((a, b) => a.date.localeCompare(b.date));
 }
 
 export async function fetchFacebookPageFollowerCount(pageId: string): Promise<number> {
-  const json = await graphGet(`/${pageId}`, { fields: "fan_count" });
+  const json = await graphGet(`/${pageId}`, { fields: "fan_count" }, await getPageAccessToken(pageId));
   return json.fan_count || 0;
 }
 
-// Modern IG Graph API insights require metric_type=time_series for daily
-// breakdowns (a plain `metric` request without it returns a single
-// aggregate for the whole range instead of one point per day).
-export async function fetchInstagramInsights(igUserId: string, since: string, until: string): Promise<OrganicDailyRow[]> {
-  const byDate = await fetchInsightsByDate(`/${igUserId}/insights`, IG_METRIC_MAP, since, until, {
-    metric_type: "time_series",
-  });
+/**
+ * Instagram insights. Requires a Page access token (the IG account is
+ * reached through its connected Page) and the instagram_basic /
+ * instagram_manage_insights permissions on the Meta app itself - without
+ * those the call returns "(#10) Application does not have permission",
+ * which no token scope can work around; it needs App Review.
+ *
+ * metric_type=time_series is required for a daily breakdown - a plain
+ * `metric` request returns one aggregate for the whole range instead.
+ */
+export async function fetchInstagramInsights(
+  igUserId: string,
+  since: string,
+  until: string,
+  pageId?: string
+): Promise<OrganicDailyRow[]> {
+  const token = pageId ? await getPageAccessToken(pageId) : undefined;
+  const byDate = await fetchInsightsByDate(
+    `/${igUserId}/insights`,
+    IG_METRIC_MAP,
+    since,
+    until,
+    { metric_type: "time_series" },
+    token
+  );
   return Array.from(byDate.values()).sort((a, b) => a.date.localeCompare(b.date));
 }
 
-export async function fetchInstagramFollowerCount(igUserId: string): Promise<number> {
-  const json = await graphGet(`/${igUserId}`, { fields: "followers_count" });
+export async function fetchInstagramFollowerCount(igUserId: string, pageId?: string): Promise<number> {
+  const token = pageId ? await getPageAccessToken(pageId) : undefined;
+  const json = await graphGet(`/${igUserId}`, { fields: "followers_count" }, token);
   return json.followers_count || 0;
 }
 
@@ -411,12 +545,18 @@ export interface ContentItemRow {
 }
 
 export async function fetchFacebookPagePosts(pageId: string, since: string, until: string): Promise<ContentItemRow[]> {
-  const posts = await graphGetAllPages(`/${pageId}/posts`, {
-    fields: "id,message,created_time,permalink_url,full_picture",
-    since,
-    until,
-    limit: "50",
-  });
+  const pageToken = await getPageAccessToken(pageId);
+  const posts = await graphGetAllPages(
+    `/${pageId}/posts`,
+    {
+      fields: "id,message,created_time,permalink_url,full_picture",
+      since,
+      until,
+      limit: "50",
+    },
+    50,
+    pageToken
+  );
 
   const results: ContentItemRow[] = [];
   for (const post of posts) {
@@ -425,18 +565,22 @@ export async function fetchFacebookPagePosts(pageId: string, since: string, unti
     // the whole sync, so each fetch degrades to zeros instead of throwing.
     let insights: Record<string, any> = {};
     try {
-      const insightsJson = await graphGet(`/${post.id}/insights`, {
-        metric: "post_impressions,post_impressions_unique,post_engaged_users",
-      });
+      const insightsJson = await graphGet(
+        `/${post.id}/insights`,
+        { metric: "post_impressions,post_impressions_unique,post_engaged_users" },
+        pageToken
+      );
       insights = Object.fromEntries((insightsJson.data || []).map((m: any) => [m.name, m.values?.[0]?.value || 0]));
     } catch {
       // best-effort
     }
     let engagement: Record<string, any> = {};
     try {
-      engagement = await graphGet(`/${post.id}`, {
-        fields: "likes.summary(true).limit(0),comments.summary(true).limit(0),shares",
-      });
+      engagement = await graphGet(
+        `/${post.id}`,
+        { fields: "likes.summary(true).limit(0),comments.summary(true).limit(0),shares" },
+        pageToken
+      );
     } catch {
       // best-effort
     }
@@ -463,11 +607,22 @@ export async function fetchFacebookPagePosts(pageId: string, since: string, unti
 
 // IG Stories expire after 24h and aren't retrievable retroactively via
 // /media, so this covers feed posts, carousels, reels, and videos only.
-export async function fetchInstagramMedia(igUserId: string, since: string, until: string): Promise<ContentItemRow[]> {
-  const media = await graphGetAllPages(`/${igUserId}/media`, {
-    fields: "id,caption,media_type,media_url,permalink,timestamp,like_count,comments_count",
-    limit: "50",
-  });
+export async function fetchInstagramMedia(
+  igUserId: string,
+  since: string,
+  until: string,
+  pageId?: string
+): Promise<ContentItemRow[]> {
+  const igToken = pageId ? await getPageAccessToken(pageId) : undefined;
+  const media = await graphGetAllPages(
+    `/${igUserId}/media`,
+    {
+      fields: "id,caption,media_type,media_url,permalink,timestamp,like_count,comments_count",
+      limit: "50",
+    },
+    50,
+    igToken
+  );
 
   const sinceMs = new Date(`${since}T00:00:00Z`).getTime();
   const untilMs = new Date(`${until}T23:59:59Z`).getTime();
@@ -482,7 +637,7 @@ export async function fetchInstagramMedia(igUserId: string, since: string, until
     try {
       const isVideo = m.media_type === "VIDEO" || m.media_type === "REELS";
       const metricList = isVideo ? "reach,saved,video_views" : "reach,saved";
-      const insightsJson = await graphGet(`/${m.id}/insights`, { metric: metricList });
+      const insightsJson = await graphGet(`/${m.id}/insights`, { metric: metricList }, igToken);
       insights = Object.fromEntries((insightsJson.data || []).map((x: any) => [x.name, x.values?.[0]?.value || 0]));
     } catch {
       // best-effort

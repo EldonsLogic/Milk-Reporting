@@ -18,10 +18,11 @@ import {
   createDashboard,
   setDefaultDashboard,
   saveDashboardAsTemplate,
+  fetchClientCurrency,
   Annotation,
 } from "@/lib/supabase-data";
 import { setCustomMetricsCache } from "@/lib/metric-catalog";
-import { getDateBounds, toDateStr } from "@/lib/query-engine";
+import { getDateBounds, toDateStr, setDisplayCurrency } from "@/lib/query-engine";
 import { getErrorMessage } from "@/lib/errors";
 import { useAuth } from "@/lib/auth-context";
 import { RawDailyRecord, ContentPost, DateRangePreset, CustomDateRange } from "@/types";
@@ -95,12 +96,16 @@ export function AgencyShell({ agencyId }: { agencyId: string }) {
     async (clientId: string, window: { start: string; end: string }) => {
       setDashboardsLoading(true);
       try {
-        const [dashList, recordList, contentList, annotationList] = await Promise.all([
+        const [dashList, recordList, contentList, annotationList, currency] = await Promise.all([
           fetchDashboardsForClient(clientId),
           fetchRecords(clientId, window),
           fetchContentPosts(clientId, window),
           fetchAnnotations(clientId),
+          fetchClientCurrency(clientId),
         ]);
+        // Set before any widget renders, so spend is never briefly shown in
+        // the wrong currency on first paint.
+        setDisplayCurrency(currency);
         setDashboards(dashList);
         setSelectedDashboardId((prev) =>
           prev && dashList.some((d) => d.id === prev) ? prev : dashList[0]?.id || null

@@ -671,16 +671,41 @@ export function queryContentPosts(
   return config.limit ? sorted.slice(0, config.limit) : sorted;
 }
 
-export function formatMetricValue(val: number, dataType: string): string {
+/**
+ * Currency the app formats spend in when a client's connections don't
+ * report one. Deliberately a module-level setting rather than a hardcoded
+ * "USD" inside the formatter: the first real account connected reports in
+ * SAR, and rendering riyals behind a dollar sign misstates every cost
+ * metric on a client-facing report.
+ */
+let displayCurrency = "USD";
+
+export function setDisplayCurrency(code?: string | null) {
+  displayCurrency = code && /^[A-Z]{3}$/.test(code) ? code : "USD";
+}
+
+export function getDisplayCurrency(): string {
+  return displayCurrency;
+}
+
+export function formatMetricValue(val: number, dataType: string, currency?: string): string {
   if (val === undefined || val === null || isNaN(val)) return "0";
 
   switch (dataType) {
-    case "currency":
-      return new Intl.NumberFormat("en-US", {
-        style: "currency",
-        currency: "USD",
-        maximumFractionDigits: val >= 100 ? 0 : 2,
-      }).format(val);
+    case "currency": {
+      const code = currency || displayCurrency;
+      try {
+        return new Intl.NumberFormat("en-US", {
+          style: "currency",
+          currency: code,
+          maximumFractionDigits: val >= 100 ? 0 : 2,
+        }).format(val);
+      } catch {
+        // Intl throws on an unrecognised code rather than degrading, and a
+        // bad currency should never blank out the number itself.
+        return `${code} ${new Intl.NumberFormat("en-US", { maximumFractionDigits: val >= 100 ? 0 : 2 }).format(val)}`;
+      }
+    }
     case "percentage":
       return `${val.toFixed(2)}%`;
     case "ratio":
