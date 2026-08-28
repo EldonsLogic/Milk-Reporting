@@ -14,7 +14,7 @@ import {
   Annotation,
 } from "@/lib/supabase-data";
 import { setCustomMetricsCache } from "@/lib/metric-catalog";
-import { getDateBounds, toDateStr, setDisplayCurrency } from "@/lib/query-engine";
+import { getDateBounds, toDateStr, setDisplayCurrency, widestWindowForDashboard } from "@/lib/query-engine";
 import { DateRangePreset, CustomDateRange } from "@/types";
 import { DashboardBuilder } from "@/components/dashboard/DashboardBuilder";
 import { useAuth } from "@/lib/auth-context";
@@ -95,7 +95,17 @@ export function ClientPortalShell({ clientId }: { clientId: string }) {
         if (!active) return;
         setDisplayCurrency(await fetchClientCurrency(clientId));
         setCustomMetricsCache(customMetrics);
-        setDashboard(dashboards.find((d) => d.isDefault) || dashboards[0] || null);
+        const chosen = dashboards.find((d) => d.isDefault) || dashboards[0] || null;
+        setDashboard(chosen);
+        // Widen for any widget that overrides the dashboard's date range.
+        if (chosen) {
+          const widest = widestWindowForDashboard(chosen);
+          setDataWindow((prev) =>
+            widest.start < prev.start || widest.end > prev.end
+              ? { start: widest.start < prev.start ? widest.start : prev.start, end: widest.end > prev.end ? widest.end : prev.end }
+              : prev
+          );
+        }
         setRecords(recordList);
         setContentPosts(contentList);
         setAnnotations(annotationList);

@@ -117,6 +117,43 @@ export function getPreviousPeriodBounds(startDate: Date, endDate: Date): { prevS
   return { prevStart, prevEnd };
 }
 
+/**
+ * The widest date window any widget on a dashboard could ask for.
+ *
+ * Records are fetched date-bounded, and the bound used to come from the
+ * dashboard's own range alone. But a widget can override that range - a
+ * content grid showing the full post library, a "previous year" comparison
+ * card - and those widgets then queried data the shell had never fetched,
+ * rendering empty while the rows sat in the database. This unions the
+ * dashboard range with every widget override so the fetch covers all of them.
+ */
+export function widestWindowForDashboard(
+  dashboard: { globalDateRange: DateRangePreset; customDateBounds?: CustomDateRange; pages: { widgets: { dataConfig: WidgetDataConfig }[] }[] }
+): { start: string; end: string } {
+  const windows: { start: string; end: string }[] = [];
+
+  const push = (preset: DateRangePreset, bounds?: CustomDateRange) => {
+    const { startDate, endDate } = getDateBounds(preset, bounds);
+    windows.push({ start: toDateStr(startDate), end: toDateStr(endDate) });
+  };
+
+  push(dashboard.globalDateRange || "last_30_days", dashboard.customDateBounds);
+
+  for (const page of dashboard.pages || []) {
+    for (const widget of page.widgets || []) {
+      const cfg = widget.dataConfig;
+      if (cfg?.dateRangeMode === "override" && cfg.customDateRange) {
+        push(cfg.customDateRange, cfg.customDateBounds);
+      }
+    }
+  }
+
+  return {
+    start: windows.reduce((min, w) => (w.start < min ? w.start : min), windows[0].start),
+    end: windows.reduce((max, w) => (w.end > max ? w.end : max), windows[0].end),
+  };
+}
+
 /** Same calendar window, shifted back one year - for year-over-year. */
 export function getPreviousYearBounds(startDate: Date, endDate: Date): { prevStart: Date; prevEnd: Date } {
   const prevStart = new Date(startDate);
@@ -285,7 +322,12 @@ export function queryWidgetData(
     const displayName = metricDef ? metricDef.displayName : metricId;
 
     const currVal = calculateMetricValue(currentRecords, metricId);
-    const hasComparison = comparisonMode !== "none";
+    // A comparison needs a period that actually holds data. When the previous
+    // window has no records at all - a new account, or a range that predates
+    // the first sync - there is nothing to compare against, and reporting
+    // "+100%" would state a growth figure that was never measured. Left
+    // undefined so the widget shows no delta rather than a fabricated one.
+    const hasComparison = comparisonMode !== "none" && previousRecords.length > 0;
     const prevVal = hasComparison ? calculateMetricValue(previousRecords, metricId) : 0;
 
     let changePercentage: number | undefined = undefined;
@@ -293,6 +335,8 @@ export function queryWidgetData(
       if (prevVal > 0) {
         changePercentage = ((currVal - prevVal) / prevVal) * 100;
       } else if (currVal > 0) {
+        // Previous period was measured and was genuinely zero - a real
+        // increase from nothing, unlike the no-data case handled above.
         changePercentage = 100;
       }
     }
@@ -601,14 +645,34 @@ function calculateMetricValue(records: RawDailyRecord[], metricId: string): numb
     case "posts_published":
       return records.reduce((acc, r) => acc + (r.postsPublished || 0), 0);
     default: {
-      // Not a built-in metric - check whether it's an agency-defined
-      // custom metric and, if so, evaluate its formula against every
-      // summed numeric field (not just the handful this function names
-      // explicitly), so a custom formula can reference any field.
-      const customMetric = getMetricById(metricId);
-      if (customMetric?.isDerived && customMetric.formula) {
+      const metricDef = getMetricById(metricId);
+
+      // A non-derived catalog metric names the RawDailyRecord field it reads
+      // in sourceField, so it can be summed directly rather than needing a
+      // hand-written case above. Six catalog metrics (link_clicks,
+      // landing_page_views, video_3s_views, video_avg_watch_time,
+      // followers_gained, profile_visits) had no case and so silently
+      // returned 0 while their data was sitting in the records - selectable
+      // in the picker, permanently and invisibly wrong.
+      if (metricDef && !metricDef.isDerived && metricDef.sourceField) {
+        const field = metricDef.sourceField as keyof RawDailyRecord;
+        // Averaged, not summed, for rate-style fields - the same distinction
+        // averageField() exists for above.
+        if (field === "videoAvgWatchTime" || field === "avgResponseTimeMinutes") {
+          return averageField(records, field);
+        }
+        return records.reduce((acc, r) => {
+          const value = r[field];
+          return acc + (typeof value === "number" ? value : 0);
+        }, 0);
+      }
+
+      // Otherwise: an agency-defined custom metric, evaluated against every
+      // summed numeric field (not just the handful named explicitly above),
+      // so a custom formula can reference any field.
+      if (metricDef?.isDerived && metricDef.formula) {
         try {
-          const result = evaluateFormula(customMetric.formula, sumAllNumericFields(records));
+          const result = evaluateFormula(metricDef.formula, sumAllNumericFields(records));
           return result ?? 0;
         } catch {
           return 0;

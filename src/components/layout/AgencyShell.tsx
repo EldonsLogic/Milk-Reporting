@@ -22,7 +22,7 @@ import {
   Annotation,
 } from "@/lib/supabase-data";
 import { setCustomMetricsCache } from "@/lib/metric-catalog";
-import { getDateBounds, toDateStr, setDisplayCurrency } from "@/lib/query-engine";
+import { getDateBounds, toDateStr, setDisplayCurrency, widestWindowForDashboard } from "@/lib/query-engine";
 import { getErrorMessage } from "@/lib/errors";
 import { useAuth } from "@/lib/auth-context";
 import { RawDailyRecord, ContentPost, DateRangePreset, CustomDateRange } from "@/types";
@@ -107,6 +107,24 @@ export function AgencyShell({ agencyId }: { agencyId: string }) {
         // the wrong currency on first paint.
         setDisplayCurrency(currency);
         setDashboards(dashList);
+
+        // A widget may override the dashboard's date range (a content grid
+        // showing the full post library, a previous-year comparison). Those
+        // ranges can reach outside the window just fetched, so widen to cover
+        // them - otherwise the widget renders empty while its rows sit in the
+        // database, unfetched.
+        const needed = dashList.map(widestWindowForDashboard);
+        if (needed.length > 0) {
+          const widest = {
+            start: needed.reduce((m, w) => (w.start < m ? w.start : m), needed[0].start),
+            end: needed.reduce((m, w) => (w.end > m ? w.end : m), needed[0].end),
+          };
+          setDataWindow((prev) =>
+            widest.start < prev.start || widest.end > prev.end
+              ? { start: widest.start < prev.start ? widest.start : prev.start, end: widest.end > prev.end ? widest.end : prev.end }
+              : prev
+          );
+        }
         setSelectedDashboardId((prev) =>
           prev && dashList.some((d) => d.id === prev) ? prev : dashList[0]?.id || null
         );

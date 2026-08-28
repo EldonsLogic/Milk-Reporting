@@ -71,6 +71,23 @@ const DIMENSION_LABELS: Record<string, string> = {
   account: "Account",
 };
 
+/**
+ * Compact Y-axis ticks. Charts were drawn with a negative left margin to
+ * reclaim space, which silently clipped the labels once values reached six
+ * or seven figures - an axis reading "00000" against 7.8M impressions. A
+ * compact tick is narrow enough that the axis fits without the negative
+ * margin doing the hiding.
+ */
+function compactTick(value: number): string {
+  const abs = Math.abs(value);
+  if (abs >= 1_000_000) return `${(value / 1_000_000).toFixed(abs >= 10_000_000 ? 0 : 1)}M`;
+  if (abs >= 1_000) return `${(value / 1_000).toFixed(abs >= 10_000 ? 0 : 1)}k`;
+  return `${value}`;
+}
+
+const AXIS_TICK = { fontSize: 10, fill: "#666" } as const;
+const CHART_MARGIN = { top: 5, right: 8, left: 4, bottom: 0 } as const;
+
 function EmptyBody({ message }: { message: string }) {
   return (
     <div className="flex items-center justify-center h-full text-center text-xs font-mono text-neutral-400 py-4 px-3">
@@ -96,7 +113,7 @@ function mergeTrendData(results: ReturnType<typeof queryWidgetData>) {
 }
 
 /** Widget types whose body is a per-entity breakdown rather than an aggregate. */
-const BREAKDOWN_WIDGETS = new Set(["campaign_table", "ranking", "heatmap"]);
+const BREAKDOWN_WIDGETS = new Set(["campaign_table", "ranking", "heatmap", "donut_chart"]);
 
 export function WidgetRenderer({
   widget,
@@ -294,10 +311,10 @@ function renderWidgetBody(
       return (
         <div className="h-full w-full min-h-[140px] pt-1">
           <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={chartData} margin={{ top: chartTopMargin(marks.length > 0), right: 5, left: -20, bottom: 0 }}>
+            <LineChart data={chartData} margin={{ ...CHART_MARGIN, top: chartTopMargin(marks.length > 0) }}>
               <CartesianGrid strokeDasharray="2 2" stroke="#E2E2DF" vertical={false} />
-              <XAxis dataKey="date" tick={{ fontSize: 10, fill: "#666" }} tickLine={false} />
-              <YAxis tick={{ fontSize: 10, fill: "#666" }} tickLine={false} />
+              <XAxis dataKey="date" tick={AXIS_TICK} tickLine={false} minTickGap={16} />
+              <YAxis tick={AXIS_TICK} tickLine={false} tickFormatter={compactTick} width={44} />
               <Tooltip
                 contentStyle={{
                   backgroundColor: "#111111",
@@ -335,7 +352,7 @@ function renderWidgetBody(
       return (
         <div className="h-full w-full min-h-[140px] pt-1">
           <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={chartData} margin={{ top: chartTopMargin(marks.length > 0), right: 5, left: -20, bottom: 0 }}>
+            <AreaChart data={chartData} margin={{ ...CHART_MARGIN, top: chartTopMargin(marks.length > 0) }}>
               <defs>
                 {results.map((res, i) => (
                   <linearGradient key={res.metricId} id={`areaGrad-${res.metricId}`} x1="0" y1="0" x2="0" y2="1">
@@ -345,8 +362,8 @@ function renderWidgetBody(
                 ))}
               </defs>
               <CartesianGrid strokeDasharray="2 2" stroke="#E2E2DF" vertical={false} />
-              <XAxis dataKey="date" tick={{ fontSize: 10, fill: "#666" }} tickLine={false} />
-              <YAxis tick={{ fontSize: 10, fill: "#666" }} tickLine={false} />
+              <XAxis dataKey="date" tick={AXIS_TICK} tickLine={false} minTickGap={16} />
+              <YAxis tick={AXIS_TICK} tickLine={false} tickFormatter={compactTick} width={44} />
               <Tooltip
                 contentStyle={{
                   backgroundColor: "#111111",
@@ -382,10 +399,10 @@ function renderWidgetBody(
       return (
         <div className="h-full w-full min-h-[140px] pt-1">
           <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={chartData} margin={{ top: chartTopMargin(marks.length > 0), right: 5, left: -20, bottom: 0 }}>
+            <BarChart data={chartData} margin={{ ...CHART_MARGIN, top: chartTopMargin(marks.length > 0) }}>
               <CartesianGrid strokeDasharray="2 2" stroke="#E2E2DF" vertical={false} />
-              <XAxis dataKey="date" tick={{ fontSize: 10, fill: "#666" }} tickLine={false} />
-              <YAxis tick={{ fontSize: 10, fill: "#666" }} tickLine={false} />
+              <XAxis dataKey="date" tick={AXIS_TICK} tickLine={false} minTickGap={16} />
+              <YAxis tick={AXIS_TICK} tickLine={false} tickFormatter={compactTick} width={44} />
               <Tooltip
                 contentStyle={{
                   backgroundColor: "#111111",
@@ -413,34 +430,52 @@ function renderWidgetBody(
     }
 
     case "donut_chart": {
-      const donutData = results.map((r, i) => ({
-        name: r.displayName,
-        value: r.value,
-        color: MILK_PALETTE[i % MILK_PALETTE.length],
-      }));
+      // A donut answers "share of what?", so when a breakdown dimension is
+      // set the slices are the entities (campaigns, objectives, ad sets).
+      // Previously the breakdown was ignored and the donut plotted the
+      // configured metrics instead - which, for a single metric, is one
+      // slice of 100% and reads as a broken chart showing "0".
+      const metricId = widget.dataConfig.metricIds[0] || "spend";
+      const metricDef = results.find((r) => r.metricId === metricId);
+      const usesBreakdown = !!widget.dataConfig.breakdown && breakdownRows.length > 0;
+
+      const donutData = usesBreakdown
+        ? breakdownRows.slice(0, 8).map((row, i) => ({
+            name: row.label,
+            value: row.values[metricId] || 0,
+            display: row.formatted[metricId],
+            color: MILK_SERIES_PALETTE[i % MILK_SERIES_PALETTE.length],
+          }))
+        : results.map((r, i) => ({
+            name: r.displayName,
+            value: r.value,
+            display: r.formattedValue,
+            color: MILK_PALETTE[i % MILK_PALETTE.length],
+          }));
+
+      if (donutData.every((d) => d.value === 0)) {
+        return <EmptyBody message={`No ${metricDef?.displayName || metricId} recorded in this date range.`} />;
+      }
+
       return (
         <div className="h-full w-full min-h-[140px] flex items-center justify-center">
           <ResponsiveContainer width="100%" height="100%">
             <PieChart>
-              <Pie
-                data={donutData}
-                innerRadius={35}
-                outerRadius={55}
-                paddingAngle={2}
-                dataKey="value"
-              >
+              <Pie data={donutData} innerRadius="45%" outerRadius="72%" paddingAngle={2} dataKey="value">
                 {donutData.map((entry, index) => (
                   <Cell key={`cell-${index}`} fill={entry.color} stroke="#111111" strokeWidth={1} />
                 ))}
               </Pie>
               <Tooltip
-                contentStyle={{
-                  backgroundColor: "#111111",
-                  color: "#FFFFFF",
-                  borderRadius: "0px",
-                  fontSize: "11px",
-                  fontFamily: "monospace",
-                }}
+                contentStyle={TOOLTIP_STYLE}
+                formatter={(value: number, name: string) => [
+                  formatMetricValue(value, metricDef ? "currency" : "integer"),
+                  name,
+                ]}
+              />
+              <Legend
+                wrapperStyle={{ fontSize: "9px", fontFamily: "monospace" }}
+                formatter={(value: string) => (value.length > 28 ? `${value.slice(0, 27)}…` : value)}
               />
             </PieChart>
           </ResponsiveContainer>
@@ -456,10 +491,10 @@ function renderWidgetBody(
       return (
         <div className="h-full w-full min-h-[140px] pt-1">
           <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={stacked.data} margin={{ top: chartTopMargin(marks.length > 0), right: 5, left: -20, bottom: 0 }}>
+            <BarChart data={stacked.data} margin={{ ...CHART_MARGIN, top: chartTopMargin(marks.length > 0) }}>
               <CartesianGrid strokeDasharray="2 2" stroke="#E2E2DF" vertical={false} />
-              <XAxis dataKey="date" tick={{ fontSize: 10, fill: "#666" }} tickLine={false} />
-              <YAxis tick={{ fontSize: 10, fill: "#666" }} tickLine={false} />
+              <XAxis dataKey="date" tick={AXIS_TICK} tickLine={false} minTickGap={16} />
+              <YAxis tick={AXIS_TICK} tickLine={false} tickFormatter={compactTick} width={44} />
               <Tooltip contentStyle={TOOLTIP_STYLE} />
               <Legend wrapperStyle={{ fontSize: "10px", fontFamily: "monospace" }} />
               {annotationMarkers(marks)}
