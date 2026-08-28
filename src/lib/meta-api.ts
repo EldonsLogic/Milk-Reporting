@@ -560,30 +560,50 @@ export async function fetchFacebookPagePosts(pageId: string, since: string, unti
 
   const results: ContentItemRow[] = [];
   for (const post of posts) {
-    // Insights/engagement are fetched per-post and can legitimately fail
-    // for boosted-only or restricted posts - one bad post shouldn't sink
-    // the whole sync, so each fetch degrades to zeros instead of throwing.
+    // Post-level insights, verified against a live Page on v21. Meta retired
+    // post_impressions, post_impressions_unique and post_engaged_users - they
+    // now return "(#100) The value must be a valid insights metric", and
+    // because Meta rejects the whole request when any metric is invalid, the
+    // old list returned nothing for every post. These four are what survive.
     let insights: Record<string, any> = {};
+    let insightsError: string | null = null;
     try {
       const insightsJson = await graphGet(
         `/${post.id}/insights`,
-        { metric: "post_impressions,post_impressions_unique,post_engaged_users" },
+        { metric: "post_reactions_by_type_total,post_clicks,post_video_views,blue_reels_play_count" },
         pageToken
       );
-      insights = Object.fromEntries((insightsJson.data || []).map((m: any) => [m.name, m.values?.[0]?.value || 0]));
-    } catch {
-      // best-effort
+      insights = Object.fromEntries((insightsJson.data || []).map((m: any) => [m.name, m.values?.[0]?.value ?? 0]));
+    } catch (err) {
+      insightsError = err instanceof Error ? err.message : String(err);
     }
+
+    // Engagement counts need Advanced Access on pages_read_engagement, which
+    // in turn needs Business Verification. Until that clears Meta answers
+    // "(#10) This endpoint requires the 'pages_read_engagement' permission"
+    // even though the Page token demonstrably carries that scope. The reason
+    // is recorded on the row rather than swallowed, so a zero here is
+    // distinguishable from a genuine zero.
     let engagement: Record<string, any> = {};
+    let engagementError: string | null = null;
     try {
       engagement = await graphGet(
         `/${post.id}`,
         { fields: "likes.summary(true).limit(0),comments.summary(true).limit(0),shares" },
         pageToken
       );
-    } catch {
-      // best-effort
+    } catch (err) {
+      engagementError = err instanceof Error ? err.message : String(err);
     }
+
+    // post_reactions_by_type_total is a map ({like: 3, love: 1, ...}); the
+    // total is the sum, not a single field.
+    const reactions = insights.post_reactions_by_type_total;
+    const likes =
+      reactions && typeof reactions === "object"
+        ? Object.values(reactions).reduce((sum: number, v) => sum + (typeof v === "number" ? v : 0), 0)
+        : engagement.likes?.summary?.total_count || 0;
+
     results.push({
       externalContentId: post.id,
       contentType: "post",
@@ -591,15 +611,22 @@ export async function fetchFacebookPagePosts(pageId: string, since: string, unti
       mediaUrl: post.full_picture || null,
       permalink: post.permalink_url || null,
       publishedAt: post.created_time,
-      reach: insights.post_impressions_unique || 0,
-      impressions: insights.post_impressions || 0,
-      likes: engagement.likes?.summary?.total_count || 0,
+      // Facebook post reach/impressions were retired alongside the page-level
+      // equivalents; there is no replacement metric to read them from.
+      reach: 0,
+      impressions: 0,
+      likes,
       comments: engagement.comments?.summary?.total_count || 0,
       shares: engagement.shares?.count || 0,
       saves: 0,
-      videoViews: 0,
+      videoViews: insights.post_video_views || insights.blue_reels_play_count || 0,
       avgWatchTime: 0,
-      rawInsights: { ...insights, ...engagement },
+      rawInsights: {
+        ...insights,
+        ...engagement,
+        ...(insightsError ? { _insightsError: insightsError } : {}),
+        ...(engagementError ? { _engagementError: engagementError } : {}),
+      },
     });
   }
   return results;
