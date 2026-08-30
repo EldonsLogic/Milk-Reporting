@@ -148,7 +148,7 @@ export function WidgetRenderer({
       : null;
 
   return (
-    <div className="h-full w-full bg-white border border-neutral-200 flex flex-col justify-between p-4 transition-all hover:border-neutral-400 group relative">
+    <div className="h-full w-full bg-white border border-neutral-200 flex flex-col justify-between p-4 transition-[border-color,box-shadow] duration-150 hover:border-black hover:shadow-crisp-sm group relative">
       {/* Edit Mode Header Overlay Actions */}
       {isEditMode && (
         <div
@@ -170,13 +170,15 @@ export function WidgetRenderer({
         </div>
       )}
 
-      {/* Widget Header */}
+      {/* Widget Header. The scope chip is the quiet half of this pair - it
+          says which slice of data the card covers, so it reads as metadata
+          rather than competing with the title. */}
       {widget.displayConfig?.showTitle !== false && widgetType !== "image_logo" && (
-        <div className="mb-2 flex items-center justify-between border-b border-neutral-100 pb-2">
-          <h4 className="text-xs font-mono uppercase tracking-wider font-bold text-neutral-800 flex items-center gap-1.5">
+        <div className="mb-2.5 flex items-baseline justify-between gap-2 border-b border-neutral-200 pb-2">
+          <h4 className="text-[11px] font-mono uppercase tracking-[0.12em] font-bold text-black truncate">
             {widget.title}
           </h4>
-          <span className="text-[10px] font-mono text-neutral-500 uppercase px-1.5 py-0.5 bg-neutral-100 border border-neutral-200">
+          <span className="shrink-0 text-[9px] font-mono text-neutral-500 uppercase tracking-wider">
             {BREAKDOWN_WIDGETS.has(widgetType) ? dimension : widget.dataConfig.platform}
           </span>
         </div>
@@ -269,13 +271,59 @@ function renderWidgetBody(
     case "number":
     case "percentage": {
       const isPositive = (primaryResult.changePercentage || 0) >= 0;
+      const trend = primaryResult.trendData || [];
+      // Derived metrics (CTR, CPM, CPC...) have no per-day value - the engine
+      // can only compute them across a whole period - so their trend series
+      // is all zeros. Drawing that produces a flat line, which reads as "this
+      // metric was stable" rather than "this can't be plotted daily". Only
+      // plot a series that actually carries signal.
+      const spark = trend.some((p) => p.value !== 0) ? trend : [];
       return (
-        <div className="flex flex-col justify-between h-full py-1">
-          <div className="text-3xl font-display font-extrabold tracking-tight text-neutral-900">
+        <div className="flex flex-col justify-between h-full py-1 min-w-0">
+          {/* Long currency values ("SAR 41,263") overflow a narrow card at a
+              fixed size, so the headline steps down as the string grows. */}
+          <div
+            className={`${
+              primaryResult.formattedValue.length > 9
+                ? "text-xl"
+                : primaryResult.formattedValue.length > 6
+                ? "text-2xl"
+                : "text-[2rem]"
+            } leading-none font-display font-extrabold tracking-tight text-neutral-900 tabular-nums truncate`}
+            title={primaryResult.formattedValue}
+          >
             {primaryResult.formattedValue}
           </div>
+
+          {spark.length > 1 && (
+            <div className="flex-1 min-h-[28px] -mx-1 my-1.5">
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={spark} margin={{ top: 4, right: 2, left: 2, bottom: 0 }}>
+                  <defs>
+                    <linearGradient id={`spark-${widget.id}`} x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor="#FFE600" stopOpacity={0.75} />
+                      <stop offset="100%" stopColor="#FFE600" stopOpacity={0.05} />
+                    </linearGradient>
+                  </defs>
+                  <Area
+                    type="monotone"
+                    dataKey="value"
+                    stroke="#111111"
+                    strokeWidth={1.5}
+                    fill={`url(#spark-${widget.id})`}
+                    isAnimationActive={false}
+                    dot={false}
+                    // Only the final point is marked - it's the one the
+                    // headline number actually refers to.
+                    activeDot={false}
+                  />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+
           {primaryResult.formattedChange && (
-            <div className="flex items-center text-xs font-mono font-bold mt-2">
+            <div className="flex items-center text-xs font-mono font-bold">
               <span
                 className={`inline-flex items-center px-1.5 py-0.5 border ${
                   isPositive
@@ -290,7 +338,7 @@ function renderWidgetBody(
                 )}
                 {primaryResult.formattedChange}
               </span>
-              <span className="text-[10px] text-neutral-400 font-normal ml-2 uppercase">
+              <span className="text-[10px] text-neutral-400 font-normal ml-2 uppercase truncate">
                 {primaryResult.comparisonLabel}
               </span>
             </div>
@@ -578,36 +626,49 @@ function renderWidgetBody(
       }
       const metricIds = widget.dataConfig.metricIds.length ? widget.dataConfig.metricIds : ["spend"];
       const dimensionLabel = DIMENSION_LABELS[widget.dataConfig.breakdown || "campaign"];
+      // Rows are sorted by the leading metric, so shading each label cell by
+      // that metric's share turns a wall of digits into a shape you can read
+      // at a glance - which row dominates is visible before any number is.
+      const leadMetric = metricIds[0];
+      const leadMax = Math.max(...breakdownRows.map((r) => r.values[leadMetric] || 0), 0);
       return (
         <div className="overflow-auto h-full text-xs font-mono">
           <table className="w-full text-left border-collapse">
-            <thead className="sticky top-0">
-              <tr className="border-b border-black bg-neutral-100 font-bold">
-                <th className="py-1.5 px-2">{dimensionLabel}</th>
+            <thead className="sticky top-0 z-10">
+              <tr className="border-b border-black bg-white font-bold">
+                <th className="py-2 px-2 text-[10px] uppercase tracking-wider text-neutral-600">{dimensionLabel}</th>
                 {metricIds.map((id) => (
-                  <th key={id} className="py-1.5 px-2 text-right whitespace-nowrap">
+                  <th key={id} className="py-2 px-2 text-right whitespace-nowrap text-[10px] uppercase tracking-wider text-neutral-600">
                     {results.find((r) => r.metricId === id)?.displayName || id}
                   </th>
                 ))}
-                <th className="py-1.5 px-2 text-right">Share</th>
+                <th className="py-2 px-2 text-right text-[10px] uppercase tracking-wider text-neutral-600">Share</th>
               </tr>
             </thead>
             <tbody>
-              {breakdownRows.map((row) => (
-                <tr key={row.key} className="border-b border-neutral-100 hover:bg-milk-subtle">
-                  <td className="py-1.5 px-2 font-sans font-semibold text-neutral-800 max-w-[200px] truncate" title={row.label}>
-                    {row.label}
-                  </td>
-                  {metricIds.map((id) => (
-                    <td key={id} className="py-1.5 px-2 text-right font-bold text-black tabular-nums">
-                      {row.formatted[id]}
+              {breakdownRows.map((row) => {
+                const lead = leadMax > 0 ? (row.values[leadMetric] || 0) / leadMax : 0;
+                return (
+                  <tr key={row.key} className="border-b border-neutral-100 hover:bg-milk-subtle transition-colors">
+                    <td className="py-1.5 px-2 font-sans font-semibold text-neutral-900 max-w-[220px] relative" title={row.label}>
+                      <span
+                        aria-hidden
+                        className="absolute inset-y-0.5 left-0 bg-milk-yellow/35 pointer-events-none"
+                        style={{ width: `${Math.max(lead * 100, lead > 0 ? 2 : 0)}%` }}
+                      />
+                      <span className="relative block truncate">{row.label}</span>
                     </td>
-                  ))}
-                  <td className="py-1.5 px-2 text-right text-neutral-500 tabular-nums">
-                    {row.sharePercentage > 0 ? `${row.sharePercentage.toFixed(1)}%` : "—"}
-                  </td>
-                </tr>
-              ))}
+                    {metricIds.map((id) => (
+                      <td key={id} className="py-1.5 px-2 text-right font-bold text-black tabular-nums whitespace-nowrap">
+                        {row.formatted[id]}
+                      </td>
+                    ))}
+                    <td className="py-1.5 px-2 text-right text-neutral-500 tabular-nums">
+                      {row.sharePercentage > 0 ? `${row.sharePercentage.toFixed(1)}%` : "—"}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

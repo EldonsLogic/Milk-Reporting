@@ -171,6 +171,20 @@ export function DashboardBuilder({
 
   const activeFilterCount = Object.values(currentDashboard.globalFilters || {}).filter((v) => v?.trim()).length;
 
+  // The actual dates the dashboard covers, spelled out. "Last 30 Days" is
+  // the control's label; a report needs to state the window it reports on.
+  const periodLabel = useMemo(() => {
+    const { startDate, endDate } = getDateBounds(
+      globalDateRange,
+      globalDateRange === "custom" ? customBounds : undefined
+    );
+    const fmt = (d: Date) =>
+      d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+    const start = fmt(startDate);
+    const end = fmt(endDate);
+    return start === end ? start : `${start} — ${end}`;
+  }, [globalDateRange, customBounds]);
+
   // Human-readable range for the printed cover, so a PDF that outlives this
   // session still says which period it covers.
   const printRangeLabel =
@@ -443,8 +457,10 @@ export function DashboardBuilder({
             <h1 className="text-xl font-display font-black tracking-tight text-black flex items-center gap-2">
               {currentDashboard.title}
             </h1>
-            <p className="text-xs font-mono text-neutral-500">
-              Client Dashboard • {activePage.widgets.length} Widgets
+            {/* The reporting period is what a reader needs under the title -
+                a widget count is internal trivia that told the client nothing. */}
+            <p className="text-[11px] font-mono text-neutral-500 uppercase tracking-wider">
+              {periodLabel}
             </p>
           </div>
 
@@ -692,8 +708,12 @@ export function DashboardBuilder({
               const sectionWidgets = activePage.widgets.filter((w) => w.sectionId === section.id);
               return (
                 <div key={section.id}>
-                  <div className="flex items-center justify-between border-b-2 border-black pb-1.5 mb-4">
-                    <h2 className="text-sm font-display font-black uppercase tracking-wide text-black">
+                  {/* A short yellow rule marks the section, and the full-width
+                      hairline carries it across - enough hierarchy to separate
+                      bands of widgets without a heavy black bar on every one. */}
+                  <div className="flex items-center justify-between border-b border-neutral-300 pb-2 mb-4 relative">
+                    <span aria-hidden className="absolute -bottom-px left-0 h-0.5 w-10 bg-milk-yellow" />
+                    <h2 className="text-sm font-display font-black uppercase tracking-[0.08em] text-black">
                       {section.title}
                     </h2>
                     {isEditMode && (
