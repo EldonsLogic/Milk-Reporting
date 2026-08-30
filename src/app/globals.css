@@ -69,6 +69,20 @@
   border: 2px dashed #111111;
 }
 
+/* Chart tooltips sit on a near-black ground, but Recharts colours each row
+   with that series' own colour as an inline style. The primary series in
+   this palette is #111111, so those rows rendered black-on-black - a solid
+   dark block with no readable text. The Tooltip components pass itemStyle /
+   labelStyle to fix it; this rule is the guarantee, since an inline style
+   from a third-party library can only be beaten by !important. */
+.recharts-tooltip-wrapper .recharts-tooltip-item,
+.recharts-tooltip-wrapper .recharts-tooltip-item-name,
+.recharts-tooltip-wrapper .recharts-tooltip-item-separator,
+.recharts-tooltip-wrapper .recharts-tooltip-item-value,
+.recharts-tooltip-wrapper .recharts-tooltip-label {
+  color: #ffffff !important;
+}
+
 /* Custom scrollbars for high-contrast Milk look */
 ::-webkit-scrollbar {
   width: 6px;

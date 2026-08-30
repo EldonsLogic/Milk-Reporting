@@ -61,6 +61,14 @@ const TOOLTIP_STYLE = {
   fontFamily: "monospace",
 } as const;
 
+// Recharts colours each tooltip row with that series' own colour. The primary
+// series in this palette is near-black (#111111) and the tooltip ground is
+// also #111111, so those rows rendered black-on-black - a solid dark block
+// with invisible text. Forcing both the row and the label to white keeps
+// every series readable regardless of its plotted colour.
+const TOOLTIP_ITEM_STYLE = { color: "#FFFFFF" } as const;
+const TOOLTIP_LABEL_STYLE = { color: "#FFFFFF", fontWeight: 700 } as const;
+
 const DIMENSION_LABELS: Record<string, string> = {
   date: "Date",
   platform: "Platform",
@@ -315,16 +323,7 @@ function renderWidgetBody(
               <CartesianGrid strokeDasharray="2 2" stroke="#E2E2DF" vertical={false} />
               <XAxis dataKey="date" tick={AXIS_TICK} tickLine={false} minTickGap={16} />
               <YAxis tick={AXIS_TICK} tickLine={false} tickFormatter={compactTick} width={44} />
-              <Tooltip
-                contentStyle={{
-                  backgroundColor: "#111111",
-                  color: "#FFFFFF",
-                  borderRadius: "0px",
-                  border: "none",
-                  fontSize: "11px",
-                  fontFamily: "monospace",
-                }}
-              />
+              <Tooltip contentStyle={TOOLTIP_STYLE} itemStyle={TOOLTIP_ITEM_STYLE} labelStyle={TOOLTIP_LABEL_STYLE} />
               {results.length > 1 && <Legend wrapperStyle={{ fontSize: "10px", fontFamily: "monospace" }} />}
               {annotationMarkers(marks)}
               {results.map((res, i) => (
@@ -364,15 +363,7 @@ function renderWidgetBody(
               <CartesianGrid strokeDasharray="2 2" stroke="#E2E2DF" vertical={false} />
               <XAxis dataKey="date" tick={AXIS_TICK} tickLine={false} minTickGap={16} />
               <YAxis tick={AXIS_TICK} tickLine={false} tickFormatter={compactTick} width={44} />
-              <Tooltip
-                contentStyle={{
-                  backgroundColor: "#111111",
-                  color: "#FFFFFF",
-                  borderRadius: "0px",
-                  fontSize: "11px",
-                  fontFamily: "monospace",
-                }}
-              />
+              <Tooltip contentStyle={TOOLTIP_STYLE} itemStyle={TOOLTIP_ITEM_STYLE} labelStyle={TOOLTIP_LABEL_STYLE} />
               {results.length > 1 && <Legend wrapperStyle={{ fontSize: "10px", fontFamily: "monospace" }} />}
               {annotationMarkers(marks)}
               {results.map((res, i) => (
@@ -403,15 +394,7 @@ function renderWidgetBody(
               <CartesianGrid strokeDasharray="2 2" stroke="#E2E2DF" vertical={false} />
               <XAxis dataKey="date" tick={AXIS_TICK} tickLine={false} minTickGap={16} />
               <YAxis tick={AXIS_TICK} tickLine={false} tickFormatter={compactTick} width={44} />
-              <Tooltip
-                contentStyle={{
-                  backgroundColor: "#111111",
-                  color: "#FFFFFF",
-                  borderRadius: "0px",
-                  fontSize: "11px",
-                  fontFamily: "monospace",
-                }}
-              />
+              <Tooltip contentStyle={TOOLTIP_STYLE} itemStyle={TOOLTIP_ITEM_STYLE} labelStyle={TOOLTIP_LABEL_STYLE} />
               {results.length > 1 && <Legend wrapperStyle={{ fontSize: "10px", fontFamily: "monospace" }} />}
               {annotationMarkers(marks)}
               {results.map((res, i) => (
@@ -468,6 +451,8 @@ function renderWidgetBody(
               </Pie>
               <Tooltip
                 contentStyle={TOOLTIP_STYLE}
+                itemStyle={TOOLTIP_ITEM_STYLE}
+                labelStyle={TOOLTIP_LABEL_STYLE}
                 formatter={(value: number, name: string) => [
                   formatMetricValue(value, metricDef ? "currency" : "integer"),
                   name,
@@ -495,7 +480,7 @@ function renderWidgetBody(
               <CartesianGrid strokeDasharray="2 2" stroke="#E2E2DF" vertical={false} />
               <XAxis dataKey="date" tick={AXIS_TICK} tickLine={false} minTickGap={16} />
               <YAxis tick={AXIS_TICK} tickLine={false} tickFormatter={compactTick} width={44} />
-              <Tooltip contentStyle={TOOLTIP_STYLE} />
+              <Tooltip contentStyle={TOOLTIP_STYLE} itemStyle={TOOLTIP_ITEM_STYLE} labelStyle={TOOLTIP_LABEL_STYLE} />
               <Legend wrapperStyle={{ fontSize: "10px", fontFamily: "monospace" }} />
               {annotationMarkers(marks)}
               {stacked.series.map((key, i) => (
