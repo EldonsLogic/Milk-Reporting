@@ -150,6 +150,9 @@ async function getPageAccessToken(pageId: string): Promise<string> {
  * `maxDays`.
  */
 function splitDateRange(since: string, until: string, maxDays = 80): { since: string; until: string }[] {
+  // Facebook Page Insights tolerates ~90 days per query; Instagram rejects
+  // anything over 30 outright ("There cannot be more than 30 days between
+  // since and until"), so callers pass their own ceiling.
   const start = new Date(`${since}T00:00:00Z`);
   const end = new Date(`${until}T00:00:00Z`);
   if (!(start <= end)) return [];
@@ -433,10 +436,33 @@ const FB_METRIC_MAP: Record<string, keyof OrganicDailyRow> = {
   page_post_engagements: "postEngagements",
 };
 
-const IG_METRIC_MAP: Record<string, keyof OrganicDailyRow> = {
+/**
+ * Instagram splits its account metrics across two incompatible call shapes,
+ * verified against a live account on v21:
+ *
+ *   metric_type=time_series  - only `reach` returns a per-day series.
+ *   metric_type=total_value  - profile_views, accounts_engaged, likes,
+ *                              shares, saves, views and friends. These reject
+ *                              time_series outright ("metric is incompatible
+ *                              with metric_type=time_series"), and a
+ *                              single-day window returns nothing at all, so
+ *                              they genuinely have no daily breakdown - they
+ *                              are period aggregates by design.
+ *
+ * `impressions` no longer exists for IG accounts; `views` replaced it.
+ */
+/** Instagram rejects any insights window longer than 30 days. */
+const IG_MAX_WINDOW_DAYS = 28;
+
+const IG_TIME_SERIES_MAP: Record<string, keyof OrganicDailyRow> = {
   reach: "accountsReached",
+};
+
+const IG_TOTAL_VALUE_MAP: Record<string, keyof OrganicDailyRow> = {
   profile_views: "profileVisits",
   accounts_engaged: "accountsEngaged",
+  total_interactions: "postEngagements",
+  views: "postImpressions",
 };
 
 async function fetchInsightsByDate(
@@ -445,13 +471,14 @@ async function fetchInsightsByDate(
   since: string,
   until: string,
   extraParams: Record<string, string> = {},
-  token?: string
+  token?: string,
+  maxDays = 80
 ): Promise<Map<string, OrganicDailyRow>> {
   const byDate = new Map<string, OrganicDailyRow>();
 
-  // Chunked because Meta caps an insights query at roughly 90 days; a
-  // 12-month backfill in one request comes back as "Invalid parameter".
-  for (const chunk of splitDateRange(since, until)) {
+  // Chunked because Meta caps how long an insights window may be; a
+  // 12-month backfill in one request is rejected outright.
+  for (const chunk of splitDateRange(since, until, maxDays)) {
     const json = await graphGet(
       path,
       {
@@ -489,14 +516,16 @@ export async function fetchFacebookPageFollowerCount(pageId: string): Promise<nu
 }
 
 /**
- * Instagram insights. Requires a Page access token (the IG account is
- * reached through its connected Page) and the instagram_basic /
- * instagram_manage_insights permissions on the Meta app itself - without
- * those the call returns "(#10) Application does not have permission",
- * which no token scope can work around; it needs App Review.
+ * Instagram account insights. Needs a Page access token (an IG account is
+ * reached through its connected Page) plus instagram_basic and
+ * instagram_manage_insights on the app itself.
  *
- * metric_type=time_series is required for a daily breakdown - a plain
- * `metric` request returns one aggregate for the whole range instead.
+ * Issued as two calls because the two metric groups above take different
+ * shapes. The total_value metrics carry no daily breakdown from Meta, so
+ * they're attributed to the final day of the window rather than spread
+ * evenly across it - inventing a daily split Meta didn't report would make
+ * per-day charts look precise while being fabricated. Period totals (what
+ * KPI cards and tables show) stay exactly right either way.
  */
 export async function fetchInstagramInsights(
   igUserId: string,
@@ -505,15 +534,58 @@ export async function fetchInstagramInsights(
   pageId?: string
 ): Promise<OrganicDailyRow[]> {
   const token = pageId ? await getPageAccessToken(pageId) : undefined;
+
   const byDate = await fetchInsightsByDate(
     `/${igUserId}/insights`,
-    IG_METRIC_MAP,
+    IG_TIME_SERIES_MAP,
     since,
     until,
     { metric_type: "time_series" },
-    token
+    token,
+    IG_MAX_WINDOW_DAYS
   );
-  return Array.from(byDate.values()).sort((a, b) => a.date.localeCompare(b.date));
+
+  const rows = Array.from(byDate.values()).sort((a, b) => a.date.localeCompare(b.date));
+
+  // Each chunk's totals are attributed to that chunk's own final day, not
+  // accumulated onto the end of the whole range. Accumulating made a
+  // 15-month backfill stamp every view and interaction it had ever recorded
+  // onto one date - which then landed inside any "last 30 days" window and
+  // overstated it by more than an order of magnitude. Per-chunk keeps the
+  // error bounded to a single ~28-day window, and any range longer than a
+  // chunk still totals correctly.
+  for (const chunk of splitDateRange(since, until, IG_MAX_WINDOW_DAYS)) {
+    try {
+      const json = await graphGet(
+        `/${igUserId}/insights`,
+        {
+          metric: Object.keys(IG_TOTAL_VALUE_MAP).join(","),
+          period: "day",
+          metric_type: "total_value",
+          since: chunk.since,
+          until: chunk.until,
+        },
+        token
+      );
+
+      // Land on the last row that exists within this chunk; the reach series
+      // may not cover every calendar day the chunk spans.
+      const target = [...rows].reverse().find((r) => r.date >= chunk.since && r.date <= chunk.until);
+      if (!target) continue;
+
+      for (const entry of json.data || []) {
+        const field = IG_TOTAL_VALUE_MAP[entry.name];
+        const value = entry.total_value?.value;
+        if (field && typeof value === "number") {
+          (target[field] as number) = ((target[field] as number) || 0) + value;
+        }
+      }
+    } catch {
+      // Non-fatal: the daily reach series above is still worth storing.
+    }
+  }
+
+  return rows;
 }
 
 export async function fetchInstagramFollowerCount(igUserId: string, pageId?: string): Promise<number> {
@@ -660,14 +732,22 @@ export async function fetchInstagramMedia(
 
   const results: ContentItemRow[] = [];
   for (const m of inRange) {
+    // Verified against live media on v21. `video_views` is retired - `views`
+    // replaced it and applies to every media type, not just video, so there's
+    // no longer a reason to branch on the type. `shares` and
+    // `total_interactions` are new here and were previously not collected at
+    // all despite being available.
     let insights: Record<string, any> = {};
+    let insightsError: string | null = null;
     try {
-      const isVideo = m.media_type === "VIDEO" || m.media_type === "REELS";
-      const metricList = isVideo ? "reach,saved,video_views" : "reach,saved";
-      const insightsJson = await graphGet(`/${m.id}/insights`, { metric: metricList }, igToken);
-      insights = Object.fromEntries((insightsJson.data || []).map((x: any) => [x.name, x.values?.[0]?.value || 0]));
-    } catch {
-      // best-effort
+      const insightsJson = await graphGet(
+        `/${m.id}/insights`,
+        { metric: "reach,saved,shares,total_interactions,views" },
+        igToken
+      );
+      insights = Object.fromEntries((insightsJson.data || []).map((x: any) => [x.name, x.values?.[0]?.value ?? 0]));
+    } catch (err) {
+      insightsError = err instanceof Error ? err.message : String(err);
     }
     results.push({
       externalContentId: m.id,
@@ -678,14 +758,15 @@ export async function fetchInstagramMedia(
       permalink: m.permalink || null,
       publishedAt: m.timestamp,
       reach: insights.reach || 0,
-      impressions: 0,
+      // `views` is Instagram's replacement for impressions at media level.
+      impressions: insights.views || 0,
       likes: m.like_count || 0,
       comments: m.comments_count || 0,
-      shares: 0,
+      shares: insights.shares || 0,
       saves: insights.saved || 0,
-      videoViews: insights.video_views || 0,
+      videoViews: insights.views || 0,
       avgWatchTime: 0,
-      rawInsights: insights,
+      rawInsights: { ...insights, ...(insightsError ? { _insightsError: insightsError } : {}) },
     });
   }
   return results;
