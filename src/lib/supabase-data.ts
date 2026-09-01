@@ -462,17 +462,43 @@ function mapOrganicMetricRow(row: Record<string, any>): RawDailyRecord {
 }
 
 /**
+ * PostgREST enforces a server-side max-rows ceiling (1000 by default on
+ * Supabase) that .limit() cannot raise - ask for 100000 and you still get
+ * 1000, with no error and no indication the response was truncated. That is
+ * the worst possible failure mode for a reporting tool: a client with more
+ * than 1000 rows in the window renders confidently wrong totals.
+ *
+ * Caught in practice at 1038 rows, where the truncation silently dropped the
+ * most recent six weeks of Instagram data - including the row carrying the
+ * follower count, which is why the dashboard showed 0 followers against
+ * 24,445 in the database.
+ *
+ * Paging with .range() until a short page comes back is the only reliable
+ * way to read a full result set through PostgREST.
+ */
+const PAGE_SIZE = 1000;
+
+async function fetchAllRows(
+  build: () => { range: (from: number, to: number) => PromiseLike<{ data: any[] | null; error: any }> }
+): Promise<any[]> {
+  const all: any[] = [];
+  for (let from = 0; ; from += PAGE_SIZE) {
+    const { data, error } = await build().range(from, from + PAGE_SIZE - 1);
+    if (error) throw error;
+    const page = data || [];
+    all.push(...page);
+    if (page.length < PAGE_SIZE) return all;
+  }
+}
+
+/**
  * Fetches a client's daily records, bounded to the window actually being
- * viewed. Previously this pulled every row a client had ever accumulated and
- * let the browser filter by date - fine against seeded mock data, but Meta's
- * ad-level daily rows are campaign x ad set x ad x day, so a year of history
- * on a busy account is tens of thousands of rows fetched to render "last 7
- * days". Both tables are indexed on (client_id, date).
+ * viewed. Meta's ad-level rows are campaign x ad set x ad x day, so a year of
+ * history on a busy account is tens of thousands of rows; both tables are
+ * indexed on (client_id, date).
  *
  * The window is widened by a year on the low end so year-over-year comparison
- * still has data to compare against, and PostgREST's 1000-row default cap is
- * lifted explicitly - without that, a large account would silently render
- * partial numbers rather than erroring.
+ * still has data to compare against.
  */
 export async function fetchRecords(
   clientId: string,
@@ -486,10 +512,12 @@ export async function fetchRecords(
     return query.gte("date", lowerBound).lte("date", window.end) as T;
   };
 
-  const [paidRes, organicRes] = await Promise.all([
-    applyWindow(supabase.from("paid_daily_metrics").select("*").eq("client_id", clientId)).limit(100000),
-    applyWindow(supabase.from("organic_daily_metrics").select("*").eq("client_id", clientId)).limit(100000),
+  const [paidRows, organicRows] = await Promise.all([
+    fetchAllRows(() => applyWindow(supabase.from("paid_daily_metrics").select("*").eq("client_id", clientId))),
+    fetchAllRows(() => applyWindow(supabase.from("organic_daily_metrics").select("*").eq("client_id", clientId))),
   ]);
+  const paidRes = { data: paidRows, error: null as any };
+  const organicRes = { data: organicRows, error: null as any };
   if (paidRes.error) throw paidRes.error;
   if (organicRes.error) throw organicRes.error;
   return [...(paidRes.data || []).map(mapPaidMetricRow), ...(organicRes.data || []).map(mapOrganicMetricRow)];
@@ -522,21 +550,25 @@ export async function fetchContentPosts(
   clientId: string,
   window?: { start: string; end: string }
 ): Promise<ContentPost[]> {
-  let query = supabase
-    .from("organic_content_items")
-    .select("*")
-    .eq("client_id", clientId)
-    .order("published_at", { ascending: false });
+  // Paged for the same reason as fetchRecords - .limit() cannot raise
+  // PostgREST's server-side ceiling, so a prolific account would silently
+  // lose its oldest posts from every total.
+  const rows = await fetchAllRows(() => {
+    let query = supabase
+      .from("organic_content_items")
+      .select("*")
+      .eq("client_id", clientId)
+      .order("published_at", { ascending: false });
 
-  if (window) {
-    // published_at is a timestamp, so the upper bound has to cover the whole
-    // final day rather than stopping at its midnight.
-    query = query.gte("published_at", `${window.start}T00:00:00Z`).lte("published_at", `${window.end}T23:59:59Z`);
-  }
+    if (window) {
+      // published_at is a timestamp, so the upper bound has to cover the whole
+      // final day rather than stopping at its midnight.
+      query = query.gte("published_at", `${window.start}T00:00:00Z`).lte("published_at", `${window.end}T23:59:59Z`);
+    }
+    return query;
+  });
 
-  const { data, error } = await query.limit(5000);
-  if (error) throw error;
-  return (data || []).map(mapContentItemRow);
+  return rows.map(mapContentItemRow);
 }
 
 // ---------------------------------------------------------------------------

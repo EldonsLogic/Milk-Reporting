@@ -112,6 +112,16 @@ export interface WidgetDataFilter {
 export interface WidgetDataConfig {
   platform: Platform | "all";
   metricIds: string[];
+  /**
+   * Where a widget's numbers come from.
+   *   "daily"   - the account-level daily metrics tables (default)
+   *   "content" - summed from individual posts in the period
+   * Organic account totals arrive from Meta as period aggregates with no
+   * daily split, so for reach/impressions/engagement on social, summing the
+   * actual posts is both more accurate and what a client means by "how did
+   * our content do this month".
+   */
+  dataSource?: "daily" | "content";
   breakdown?: BreakdownDimension;
   dateRangeMode?: "inherit_dashboard" | "override";
   customDateRange?: DateRangePreset;

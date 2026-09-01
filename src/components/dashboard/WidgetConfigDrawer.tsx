@@ -89,6 +89,9 @@ export function WidgetConfigDrawer({ widget, isOpen, onClose, onSave }: Props) {
   const [limit, setLimit] = useState<string>(
     widget.dataConfig.limit != null ? String(widget.dataConfig.limit) : ""
   );
+  const [dataSource, setDataSource] = useState<"daily" | "content">(
+    widget.dataConfig.dataSource === "content" ? "content" : "daily"
+  );
   const [noteText, setNoteText] = useState(widget.displayConfig?.noteText || "");
   const [imageUrl, setImageUrl] = useState(widget.displayConfig?.imageUrl || "");
 
@@ -121,6 +124,7 @@ export function WidgetConfigDrawer({ widget, isOpen, onClose, onSave }: Props) {
         dateRangeMode,
         customDateRange,
         customDateBounds: customDateRange === "custom" ? customBounds : undefined,
+        dataSource,
         comparisonMode,
         breakdown,
         limit: Number.isFinite(parsedLimit) && parsedLimit > 0 ? parsedLimit : undefined,
@@ -176,6 +180,38 @@ export function WidgetConfigDrawer({ widget, isOpen, onClose, onSave }: Props) {
                 ))}
               </select>
             </div>
+
+            {/* Where the numbers come from */}
+            {showsMetrics && widgetType !== "content_table" && (
+              <div>
+                <label className="block font-bold uppercase text-neutral-800 mb-1">Data Source</label>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setDataSource("daily")}
+                    className={`flex-1 py-1.5 border text-center font-bold ${
+                      dataSource === "daily" ? "bg-black text-white border-black" : "bg-white text-black border-neutral-300"
+                    }`}
+                  >
+                    Account Daily
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDataSource("content")}
+                    className={`flex-1 py-1.5 border text-center font-bold ${
+                      dataSource === "content" ? "bg-black text-white border-black" : "bg-white text-black border-neutral-300"
+                    }`}
+                  >
+                    Sum of Posts
+                  </button>
+                </div>
+                <p className="text-[10px] text-neutral-500 mt-1 font-sans">
+                  {dataSource === "content"
+                    ? "Totals summed from individual posts published in the period."
+                    : "Account-level daily figures from the platform."}
+                </p>
+              </div>
+            )}
 
             {/* Platform Selection */}
             <div>

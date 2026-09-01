@@ -7,6 +7,8 @@ import {
   queryContentPosts,
   queryBreakdown,
   queryBreakdownOverTime,
+  queryContentAggregate,
+  queryContentByPlatform,
   formatMetricValue,
   QueryContext,
   BreakdownRow,
@@ -136,11 +138,21 @@ export function WidgetRenderer({
   const { widgetType, dataConfig } = widget;
   const dimension: BreakdownDimension = dataConfig.breakdown || "campaign";
 
-  const dataResults = queryWidgetData(records, dataConfig, ctx);
+  // A widget can be backed by account-level dailies or by the posts
+  // themselves. Organic account totals arrive from Meta as period aggregates
+  // with no daily split, so summing real posts is both more accurate and
+  // what a client means by "how did our content do this month".
+  const fromContent = dataConfig.dataSource === "content";
+
+  const dataResults = fromContent
+    ? queryContentAggregate(contentPosts, dataConfig, ctx)
+    : queryWidgetData(records, dataConfig, ctx);
   const contentResults =
     widgetType === "content_table" ? queryContentPosts(contentPosts, dataConfig, ctx) : [];
   const breakdownRows = BREAKDOWN_WIDGETS.has(widgetType)
-    ? queryBreakdown(records, dataConfig, ctx, dimension)
+    ? fromContent
+      ? queryContentByPlatform(contentPosts, dataConfig, ctx)
+      : queryBreakdown(records, dataConfig, ctx, dimension)
     : [];
   const stacked =
     widgetType === "stacked_bar"
@@ -179,7 +191,7 @@ export function WidgetRenderer({
             {widget.title}
           </h4>
           <span className="shrink-0 text-[9px] font-mono text-neutral-500 uppercase tracking-wider">
-            {BREAKDOWN_WIDGETS.has(widgetType) ? dimension : widget.dataConfig.platform}
+            {fromContent ? "posts" : BREAKDOWN_WIDGETS.has(widgetType) ? dimension : widget.dataConfig.platform}
           </span>
         </div>
       )}

@@ -584,8 +584,23 @@ function calculateMetricValue(records: RawDailyRecord[], metricId: string): numb
       return records.reduce((acc, r) => acc + r.saves, 0);
     case "engagement_rate":
       return sumReach > 0 ? (sumEngagements / sumReach) * 100 : 0;
-    case "total_followers":
-      return records[records.length - 1]?.totalFollowers || 0;
+    case "total_followers": {
+      // A follower count is a snapshot, not something to sum, so the right
+      // answer is the most recent one in range. Meta reports it only as a
+      // live figure, so ingestion stamps it on a single row per sync -
+      // reading records[length-1] therefore returned 0 whenever array order
+      // put a different row last, which is why Instagram showed no followers
+      // while Facebook happened to work.
+      let latestDate = "";
+      let latest = 0;
+      for (const r of records) {
+        if ((r.totalFollowers || 0) > 0 && r.date > latestDate) {
+          latestDate = r.date;
+          latest = r.totalFollowers || 0;
+        }
+      }
+      return latest;
+    }
     case "net_follower_growth":
       return sumFollowersGained - sumFollowersLost;
     case "reel_views":
@@ -703,6 +718,184 @@ function getRawFieldValue(r: RawDailyRecord, metricId: string): number {
 // always collapses to one aggregate number per metric. This returns
 // individual rows (one per post), which the aggregate engine has no
 // concept of.
+/** Which ContentPost.metrics field each catalog metric reads. */
+const CONTENT_METRIC_FIELD: Record<string, keyof ContentPost["metrics"]> = {
+  reach: "reach",
+  impressions: "impressions",
+  post_impressions: "impressions",
+  likes: "likes",
+  comments: "comments",
+  shares: "shares",
+  saves: "saves",
+  video_views: "videoViews",
+  reel_views: "videoViews",
+};
+
+/** Metrics computed across a post's fields rather than read from one. */
+function contentDerived(metricId: string, m: ContentPost["metrics"]): number | null {
+  const likes = m.likes || 0;
+  const comments = m.comments || 0;
+  const shares = m.shares || 0;
+  const saves = m.saves || 0;
+  const reach = m.reach || 0;
+
+  switch (metricId) {
+    case "post_engagements":
+      return likes + comments + shares + saves;
+    case "engagement_rate":
+      // Returned as a share of reach, resolved to a percentage by the caller
+      // once both sides have been summed across the period.
+      return reach > 0 ? likes + comments + shares + saves : 0;
+    default:
+      return null;
+  }
+}
+
+export function contentMetricValue(posts: ContentPost[], metricId: string): number {
+  if (posts.length === 0) return 0;
+
+  if (metricId === "engagement_rate") {
+    // Aggregated as total engagements over total reach, never as a mean of
+    // per-post rates - averaging rates would weight a post that reached 40
+    // people the same as one that reached 40,000.
+    const engagements = posts.reduce((acc, p) => acc + (contentDerived("post_engagements", p.metrics) || 0), 0);
+    const reach = posts.reduce((acc, p) => acc + (p.metrics.reach || 0), 0);
+    return reach > 0 ? (engagements / reach) * 100 : 0;
+  }
+  if (metricId === "posts_published") return posts.length;
+
+  const derivedTotal = posts.reduce((acc, p) => {
+    const derived = contentDerived(metricId, p.metrics);
+    return derived === null ? acc : acc + derived;
+  }, 0);
+  if (contentDerived(metricId, posts[0].metrics) !== null) return derivedTotal;
+
+  const field = CONTENT_METRIC_FIELD[metricId];
+  if (!field) return 0;
+  return posts.reduce((acc, p) => acc + (p.metrics[field] || 0), 0);
+}
+
+/**
+ * Aggregates individual posts into the same result shape queryWidgetData
+ * returns, so a KPI card, table or chart can be backed by content instead of
+ * account-level dailies. This is what "total impressions this month" should
+ * mean for organic social: the sum of what the posts actually did, rather
+ * than a platform aggregate that arrives without a daily breakdown.
+ */
+export function queryContentAggregate(
+  posts: ContentPost[],
+  config: WidgetDataConfig,
+  ctx: QueryContext = {}
+): AggregatedQueryResult[] {
+  const current = queryContentPosts(posts, config, ctx);
+
+  const isOverride = config.dateRangeMode === "override" && !!config.customDateRange;
+  const preset = isOverride ? config.customDateRange! : ctx.globalDateRange || "last_30_days";
+  const bounds = isOverride ? config.customDateBounds : ctx.globalCustomBounds;
+  const { startDate, endDate } = getDateBounds(preset, bounds);
+  const comparisonMode = config.comparisonMode || "previous_period";
+  const comparison = getComparisonBounds(comparisonMode, startDate, endDate);
+
+  let previous: ContentPost[] = [];
+  if (comparison) {
+    const prevStart = toDateStr(comparison.prevStart);
+    const prevEnd = toDateStr(comparison.prevEnd);
+    previous = posts.filter((p) => {
+      if (config.platform !== "all" && p.platform !== config.platform) return false;
+      const day = p.postedAt.slice(0, 10);
+      return day >= prevStart && day <= prevEnd;
+    });
+  }
+  const hasComparison = comparison !== null && previous.length > 0;
+
+  return config.metricIds.map((metricId) => {
+    const metricDef = getMetricById(metricId);
+    const value = contentMetricValue(current, metricId);
+    const prevVal = hasComparison ? contentMetricValue(previous, metricId) : 0;
+
+    let changePercentage: number | undefined;
+    if (hasComparison) {
+      if (prevVal > 0) changePercentage = ((value - prevVal) / prevVal) * 100;
+      else if (value > 0) changePercentage = 100;
+    }
+
+    // Posts are discrete events, so the daily series is the sum of whatever
+    // published that day - genuinely daily, unlike the account-level totals.
+    const byDate = new Map<string, number>();
+    for (const post of current) {
+      const day = post.postedAt.slice(0, 10);
+      byDate.set(day, (byDate.get(day) || 0) + contentMetricValue([post], metricId));
+    }
+    const trendData = Array.from(byDate.entries())
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([date, val]) => ({ date: date.slice(5), value: val }));
+
+    return {
+      metricId,
+      displayName: metricDef?.displayName || metricId,
+      value,
+      previousValue: hasComparison ? prevVal : undefined,
+      changePercentage,
+      formattedValue: formatMetricValue(value, metricDef?.dataType || "integer"),
+      formattedChange:
+        changePercentage !== undefined
+          ? `${changePercentage >= 0 ? "+" : ""}${changePercentage.toFixed(1)}%`
+          : undefined,
+      comparisonLabel:
+        comparisonMode === "none"
+          ? undefined
+          : comparisonMode === "previous_year"
+          ? "vs same period last year"
+          : "vs prev period",
+      trendData,
+    };
+  });
+}
+
+/** Per-platform content totals, for breaking organic performance down by network. */
+export function queryContentByPlatform(
+  posts: ContentPost[],
+  config: WidgetDataConfig,
+  ctx: QueryContext = {}
+): BreakdownRow[] {
+  const scoped = queryContentPosts(posts, { ...config, limit: undefined }, ctx);
+  const metricIds = config.metricIds.length ? config.metricIds : ["reach"];
+  const primary = metricIds[0];
+
+  const groups = new Map<string, ContentPost[]>();
+  for (const post of scoped) {
+    const bucket = groups.get(post.platform);
+    if (bucket) bucket.push(post);
+    else groups.set(post.platform, [post]);
+  }
+
+  const rows: BreakdownRow[] = Array.from(groups.entries()).map(([key, group]) => {
+    const values: Record<string, number> = {};
+    const formatted: Record<string, string> = {};
+    for (const metricId of metricIds) {
+      const val = contentMetricValue(group, metricId);
+      values[metricId] = val;
+      formatted[metricId] = formatMetricValue(val, getMetricById(metricId)?.dataType || "integer");
+    }
+    return { key, label: PLATFORM_LABELS[key] || key, values, formatted, sharePercentage: 0 };
+  });
+
+  const total = rows.reduce((acc, r) => acc + (r.values[primary] || 0), 0);
+  if (total > 0) {
+    for (const row of rows) row.sharePercentage = ((row.values[primary] || 0) / total) * 100;
+  }
+  rows.sort((a, b) => (b.values[primary] || 0) - (a.values[primary] || 0));
+  return rows;
+}
+
+const PLATFORM_LABELS: Record<string, string> = {
+  facebook_page: "Facebook",
+  instagram: "Instagram",
+  meta: "Meta Ads",
+  google_ads: "Google Ads",
+  tiktok_ads: "TikTok Ads",
+};
+
 export function queryContentPosts(
   posts: ContentPost[],
   config: WidgetDataConfig,
