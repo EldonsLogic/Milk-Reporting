@@ -4,6 +4,7 @@ export type Platform =
   | "tiktok_ads"
   | "facebook_page"
   | "instagram"
+  | "google_analytics"
   | "cross_platform";
 
 export type MetricCategory =
@@ -13,6 +14,7 @@ export type MetricCategory =
   | "Engagement"
   | "Social Audience"
   | "Content"
+  | "Web Analytics"
   | "Conversion"
   | "Value";
 
@@ -101,7 +103,10 @@ export type BreakdownDimension =
   | "adset"
   | "ad"
   | "objective"
-  | "account";
+  | "account"
+  // Google Analytics: the two dimensions web_analytics_daily is stored by
+  | "channel"
+  | "device";
 
 export interface WidgetDataFilter {
   field: string;
@@ -322,6 +327,20 @@ export interface RawDailyRecord {
   // Google Ads diagnostics (averaged, not summed, when aggregating)
   searchImpressionShare?: number; // percentage 0-100
   qualityScore?: number; // 1-10
+
+  // Web Analytics (Google Analytics 4)
+  sessions?: number;
+  engagedSessions?: number;
+  totalUsers?: number;
+  newUsers?: number;
+  screenPageViews?: number;
+  /** seconds; summable, which is what makes avg session duration derivable */
+  userEngagementDuration?: number;
+  keyEvents?: number;
+  transactions?: number;
+  totalRevenue?: number;
+  channelGroup?: string;
+  deviceCategory?: string;
 
   // Conversion & Value
   conversions: number;

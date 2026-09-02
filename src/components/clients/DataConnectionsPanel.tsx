@@ -11,11 +11,20 @@ import {
   updateConnectionScope,
   deleteConnection,
 } from "@/lib/supabase-data";
+import { ConnectionType } from "@/lib/supabase-data";
 import { getErrorMessage } from "@/lib/errors";
 import { toDateStr } from "@/lib/query-engine";
 import { Plus, Trash2, Filter, RefreshCw, Loader2, History } from "lucide-react";
 
-const REAL_INGESTION_PLATFORMS: Platform[] = ["meta", "facebook_page", "instagram"];
+const REAL_INGESTION_PLATFORMS: Platform[] = ["meta", "facebook_page", "instagram", "google_analytics"];
+
+/** Which discovery endpoint backs each platform's account picker. */
+const DISCOVERY_SOURCE: Partial<Record<Platform, "meta" | "google">> = {
+  meta: "meta",
+  facebook_page: "meta",
+  instagram: "meta",
+  google_analytics: "google",
+};
 
 async function authedFetch(input: string, init: RequestInit = {}) {
   const { data } = await supabase.auth.getSession();
@@ -31,12 +40,13 @@ interface Props {
   onChanged: () => void;
 }
 
-const PLATFORM_OPTIONS: { value: Platform; label: string; connectionType: "paid_ads" | "organic_social" }[] = [
+const PLATFORM_OPTIONS: { value: Platform; label: string; connectionType: ConnectionType }[] = [
   { value: "meta", label: "Meta Ads", connectionType: "paid_ads" },
   { value: "google_ads", label: "Google Ads", connectionType: "paid_ads" },
   { value: "tiktok_ads", label: "TikTok Ads", connectionType: "paid_ads" },
   { value: "facebook_page", label: "Facebook Page (Organic)", connectionType: "organic_social" },
   { value: "instagram", label: "Instagram (Organic)", connectionType: "organic_social" },
+  { value: "google_analytics", label: "Google Analytics 4 (Website)", connectionType: "web_analytics" },
 ];
 
 // Dimensional scope fields per the ask: page / ad account / campaign / ad
@@ -76,6 +86,12 @@ interface DiscoveryData {
   instagramAccounts: DiscoveryOption[];
 }
 
+interface GoogleDiscoveryData {
+  properties: DiscoveryOption[];
+  serviceAccountEmail: string | null;
+  hint?: string;
+}
+
 export function DataConnectionsPanel({ client, onChanged }: Props) {
   const [connections, setConnections] = useState<ConnectionRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -90,6 +106,12 @@ export function DataConnectionsPanel({ client, onChanged }: Props) {
   const [discovery, setDiscovery] = useState<DiscoveryData | null>(null);
   const [discoveryLoading, setDiscoveryLoading] = useState(false);
   const [discoveryError, setDiscoveryError] = useState<string | null>(null);
+  // Google discovery is kept separate from Meta's rather than merged into
+  // one call: the two are independently configured, and a broken Meta token
+  // must not stop an admin connecting a GA4 property (or vice versa).
+  const [googleDiscovery, setGoogleDiscovery] = useState<GoogleDiscoveryData | null>(null);
+  const [googleLoading, setGoogleLoading] = useState(false);
+  const [googleError, setGoogleError] = useState<string | null>(null);
   const [manualEntry, setManualEntry] = useState(false);
 
   const loadDiscovery = async () => {
@@ -115,6 +137,29 @@ export function DataConnectionsPanel({ client, onChanged }: Props) {
     }
   };
 
+  const loadGoogleDiscovery = async () => {
+    setGoogleLoading(true);
+    setGoogleError(null);
+    try {
+      const res = await authedFetch("/api/google/discover");
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || "Failed to load GA4 properties");
+      setGoogleDiscovery({
+        properties: (json.properties || []).map((p: any) => ({
+          id: p.id,
+          name: p.name,
+          label: p.accountName ? `${p.name} — ${p.accountName} (${p.id})` : `${p.name} (${p.id})`,
+        })),
+        serviceAccountEmail: json.serviceAccountEmail || null,
+        hint: json.hint,
+      });
+    } catch (err) {
+      setGoogleError(getErrorMessage(err, "Failed to load GA4 properties"));
+    } finally {
+      setGoogleLoading(false);
+    }
+  };
+
   const load = async () => {
     setLoading(true);
     try {
@@ -130,9 +175,10 @@ export function DataConnectionsPanel({ client, onChanged }: Props) {
   }, [client.id]);
 
   useEffect(() => {
-    if (showAddForm && REAL_INGESTION_PLATFORMS.includes(newPlatform) && !discovery && !discoveryLoading) {
-      loadDiscovery();
-    }
+    if (!showAddForm) return;
+    const source = DISCOVERY_SOURCE[newPlatform];
+    if (source === "meta" && !discovery && !discoveryLoading) loadDiscovery();
+    if (source === "google" && !googleDiscovery && !googleLoading) loadGoogleDiscovery();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showAddForm, newPlatform]);
 
@@ -168,7 +214,7 @@ export function DataConnectionsPanel({ client, onChanged }: Props) {
    */
   const handleBackfill = async (connectionId: string) => {
     const since = prompt(
-      "Backfill from which date? (yyyy-mm-dd)\n\nMeta retains roughly 37 months of ad insights; organic Page/IG insights are shorter.",
+      "Backfill from which date? (yyyy-mm-dd)\n\nMeta retains roughly 37 months of ad insights; organic Page/IG insights are shorter. GA4 goes back to when the property started collecting.",
       toDateStr(new Date(Date.now() - 365 * 24 * 60 * 60 * 1000))
     );
     if (!since) return;
@@ -252,7 +298,13 @@ export function DataConnectionsPanel({ client, onChanged }: Props) {
       ? discovery?.pages || []
       : newPlatform === "instagram"
       ? discovery?.instagramAccounts || []
+      : newPlatform === "google_analytics"
+      ? googleDiscovery?.properties || []
       : [];
+  const isGoogle = DISCOVERY_SOURCE[newPlatform] === "google";
+  const pickerLoading = isGoogle ? googleLoading : discoveryLoading;
+  const pickerError = isGoogle ? googleError : discoveryError;
+  const reloadPicker = isGoogle ? loadGoogleDiscovery : loadDiscovery;
   const showPicker = REAL_INGESTION_PLATFORMS.includes(newPlatform) && !manualEntry;
 
   const handlePickAccount = (id: string) => {
@@ -305,15 +357,15 @@ export function DataConnectionsPanel({ client, onChanged }: Props) {
                 {showPicker ? "Connected Account" : "External Account ID"}
               </label>
               {showPicker ? (
-                discoveryLoading ? (
+                pickerLoading ? (
                   <div className="w-full p-2 border border-neutral-300 bg-milk-bg text-neutral-500 flex items-center gap-1.5">
                     <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    Loading from Meta...
+                    Loading from {isGoogle ? "Google Analytics" : "Meta"}...
                   </div>
-                ) : discoveryError ? (
+                ) : pickerError ? (
                   <div className="text-red-600">
-                    {discoveryError}
-                    <button type="button" onClick={loadDiscovery} className="ml-2 underline hover:no-underline">
+                    {pickerError}
+                    <button type="button" onClick={reloadPicker} className="ml-2 underline hover:no-underline">
                       Retry
                     </button>
                   </div>
@@ -325,7 +377,13 @@ export function DataConnectionsPanel({ client, onChanged }: Props) {
                     className="w-full p-2 border border-neutral-300 focus:border-black bg-milk-bg"
                   >
                     <option value="">
-                      {discoveryOptions.length === 0 ? "No accounts found for this token" : "Select an account..."}
+                      {discoveryOptions.length === 0
+                        ? isGoogle
+                          ? "No GA4 properties shared with the service account"
+                          : "No accounts found for this token"
+                        : isGoogle
+                        ? "Select a property..."
+                        : "Select an account..."}
                     </option>
                     {discoveryOptions.map((o) => (
                       <option key={o.id} value={o.id}>
@@ -340,12 +398,17 @@ export function DataConnectionsPanel({ client, onChanged }: Props) {
                   required
                   value={newExternalId}
                   onChange={(e) => setNewExternalId(e.target.value)}
-                  placeholder="act_1234567"
+                  placeholder={isGoogle ? "GA4 property ID, e.g. 312345678" : "act_1234567"}
                   className="w-full p-2 border border-neutral-300 focus:border-black bg-milk-bg font-mono text-xs"
                 />
               )}
             </div>
           </div>
+          {isGoogle && googleDiscovery?.hint && (
+            <p className="text-neutral-600 leading-relaxed border-l-2 border-milk-yellow pl-2">
+              {googleDiscovery.hint}
+            </p>
+          )}
           {REAL_INGESTION_PLATFORMS.includes(newPlatform) && (
             <button
               type="button"

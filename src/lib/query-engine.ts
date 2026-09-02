@@ -186,6 +186,8 @@ const DIMENSION_FIELD: Record<BreakdownDimension, keyof RawDailyRecord> = {
   ad: "adName",
   objective: "campaignObjective",
   account: "accountName",
+  channel: "channelGroup",
+  device: "deviceCategory",
 };
 
 function recordDimensionValue(r: RawDailyRecord, dimension: BreakdownDimension): string {

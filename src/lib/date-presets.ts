@@ -35,4 +35,8 @@ export const BREAKDOWN_OPTIONS: { value: string; label: string }[] = [
   { value: "platform", label: "Platform" },
   { value: "objective", label: "Objective" },
   { value: "account", label: "Account" },
+  // Google Analytics dimensions - inert on paid/organic widgets, which have
+  // no channel or device value and simply group as one empty bucket.
+  { value: "channel", label: "Channel (GA4)" },
+  { value: "device", label: "Device (GA4)" },
 ];

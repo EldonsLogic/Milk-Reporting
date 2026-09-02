@@ -227,6 +227,7 @@ export function WidgetConfigDrawer({ widget, isOpen, onClose, onSave }: Props) {
                 <option value="tiktok_ads">TikTok Ads</option>
                 <option value="facebook_page">Facebook Organic Page</option>
                 <option value="instagram">Instagram Business Organic</option>
+                <option value="google_analytics">Google Analytics 4 (Website)</option>
               </select>
             </div>
 

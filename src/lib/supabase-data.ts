@@ -106,11 +106,14 @@ export interface ScopeFilters {
   postIds?: string[];
 }
 
+/** "web_analytics" is Google Analytics: neither media buying nor social. */
+export type ConnectionType = "paid_ads" | "organic_social" | "web_analytics";
+
 export interface ConnectionRow {
   id: string;
   clientId: string;
   platform: Platform;
-  connectionType: "paid_ads" | "organic_social";
+  connectionType: ConnectionType;
   accountName: string;
   externalAccountId: string;
   scopeFilters: ScopeFilters;
@@ -161,7 +164,7 @@ export async function fetchConnections(clientId: string): Promise<ConnectionRow[
 export async function createConnection(input: {
   clientId: string;
   platform: Platform;
-  connectionType: "paid_ads" | "organic_social";
+  connectionType: ConnectionType;
   accountName: string;
   externalAccountId: string;
   scopeFilters?: ScopeFilters;
@@ -462,6 +465,61 @@ function mapOrganicMetricRow(row: Record<string, any>): RawDailyRecord {
 }
 
 /**
+ * Google Analytics rows are neither paid nor organic-social, but they land in
+ * the same RawDailyRecord shape so that every widget, filter, breakdown and
+ * export path works on them unchanged. The paid/social fields stay zero -
+ * a GA row genuinely has no spend, no reach and no followers, and zero is
+ * the honest value rather than a placeholder.
+ *
+ * campaignName carries the channel group so the existing campaign_table /
+ * ranking widgets can list channels without a GA-specific widget, while
+ * channelGroup/deviceCategory back the "channel" and "device" breakdown
+ * dimensions.
+ */
+function mapWebAnalyticsRow(row: Record<string, any>): RawDailyRecord {
+  return {
+    id: row.id,
+    clientId: row.client_id,
+    platform: "google_analytics",
+    date: row.date,
+    accountName: row.property_name || row.property_id,
+    campaignName: row.channel_group,
+    spend: 0,
+    impressions: 0,
+    reach: 0,
+    frequency: 0,
+    clicks: 0,
+    linkClicks: 0,
+    landingPageViews: 0,
+    videoViews: 0,
+    video3sViews: 0,
+    thruplays: 0,
+    videoCompletions: 0,
+    videoAvgWatchTime: 0,
+    postEngagements: 0,
+    likes: 0,
+    comments: 0,
+    shares: 0,
+    saves: 0,
+    sessions: Number(row.sessions) || 0,
+    engagedSessions: Number(row.engaged_sessions) || 0,
+    totalUsers: Number(row.total_users) || 0,
+    newUsers: Number(row.new_users) || 0,
+    screenPageViews: Number(row.screen_page_views) || 0,
+    userEngagementDuration: Number(row.user_engagement_duration) || 0,
+    keyEvents: Number(row.key_events) || 0,
+    transactions: Number(row.transactions) || 0,
+    totalRevenue: Number(row.total_revenue) || 0,
+    channelGroup: row.channel_group || "",
+    deviceCategory: row.device_category || "",
+    conversions: 0,
+    leads: 0,
+    purchases: 0,
+    conversionValue: 0,
+  };
+}
+
+/**
  * PostgREST enforces a server-side max-rows ceiling (1000 by default on
  * Supabase) that .limit() cannot raise - ask for 100000 and you still get
  * 1000, with no error and no indication the response was truncated. That is
@@ -512,15 +570,24 @@ export async function fetchRecords(
     return query.gte("date", lowerBound).lte("date", window.end) as T;
   };
 
-  const [paidRows, organicRows] = await Promise.all([
+  const [paidRows, organicRows, webRows] = await Promise.all([
     fetchAllRows(() => applyWindow(supabase.from("paid_daily_metrics").select("*").eq("client_id", clientId))),
     fetchAllRows(() => applyWindow(supabase.from("organic_daily_metrics").select("*").eq("client_id", clientId))),
+    // Tolerated separately: web_analytics_daily arrives in migration 004, so
+    // a database that hasn't run it yet must still render every existing
+    // dashboard rather than failing the whole fetch on one missing table.
+    fetchAllRows(() => applyWindow(supabase.from("web_analytics_daily").select("*").eq("client_id", clientId))).catch(
+      (err) => {
+        if (err?.code === "42P01" || err?.code === "PGRST205") return [];
+        throw err;
+      }
+    ),
   ]);
-  const paidRes = { data: paidRows, error: null as any };
-  const organicRes = { data: organicRows, error: null as any };
-  if (paidRes.error) throw paidRes.error;
-  if (organicRes.error) throw organicRes.error;
-  return [...(paidRes.data || []).map(mapPaidMetricRow), ...(organicRes.data || []).map(mapOrganicMetricRow)];
+  return [
+    ...paidRows.map(mapPaidMetricRow),
+    ...organicRows.map(mapOrganicMetricRow),
+    ...webRows.map(mapWebAnalyticsRow),
+  ];
 }
 
 function mapContentItemRow(row: Record<string, any>): ContentPost {

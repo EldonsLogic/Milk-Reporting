@@ -11,6 +11,7 @@ import {
   findPageForInstagramAccount,
   fetchAdAccountCurrency,
 } from "@/lib/meta-api";
+import { fetchGa4Daily, fetchGa4PropertyCurrency } from "@/lib/google-analytics-api";
 
 type SupabaseAdmin = ReturnType<typeof getSupabaseAdmin>;
 
@@ -254,6 +255,62 @@ async function syncConnection(
     return { recordsSynced: dailyRows.length, contentItemsSynced: scopedItems.length, range: { since, until } };
   }
 
+  if (conn.platform === "google_analytics") {
+    const rows = await fetchGa4Daily(conn.external_account_id, since, until);
+
+    // Same self-healing currency stamp as the Meta branch: a GA4 property
+    // reports revenue in its own configured currency, and formatting SAR
+    // revenue as dollars is worse than showing no currency at all.
+    if (!conn.currency) {
+      try {
+        const currency = await fetchGa4PropertyCurrency(conn.external_account_id);
+        if (currency) await supabaseAdmin.from("platform_connections").update({ currency }).eq("id", conn.id);
+      } catch {
+        // Non-fatal, exactly as on the Meta side.
+      }
+    }
+
+    // Delete-then-insert rather than upsert, for the same reason as every
+    // other branch here: the range is re-pulled wholesale, so stale rows for
+    // a channel/device combination that stopped appearing must go rather
+    // than linger as phantom traffic.
+    const { error: delError } = await supabaseAdmin
+      .from("web_analytics_daily")
+      .delete()
+      .eq("client_id", conn.client_id)
+      .eq("property_id", conn.external_account_id)
+      .gte("date", since)
+      .lte("date", until);
+    if (delError) throw delError;
+
+    if (rows.length > 0) {
+      const { error } = await supabaseAdmin.from("web_analytics_daily").insert(
+        rows.map((r) => ({
+          client_id: conn.client_id,
+          connection_id: conn.id,
+          platform: "google_analytics",
+          property_id: conn.external_account_id,
+          property_name: conn.account_name,
+          date: r.date,
+          channel_group: r.channelGroup,
+          device_category: r.deviceCategory,
+          sessions: r.sessions,
+          engaged_sessions: r.engagedSessions,
+          total_users: r.totalUsers,
+          new_users: r.newUsers,
+          screen_page_views: r.screenPageViews,
+          user_engagement_duration: r.userEngagementDuration,
+          key_events: r.keyEvents,
+          transactions: r.transactions,
+          total_revenue: r.totalRevenue,
+        }))
+      );
+      if (error) throw error;
+    }
+
+    return { recordsSynced: rows.length, range: { since, until } };
+  }
+
   throw new Error(`Real ingestion isn't wired up yet for platform "${conn.platform}" (Google Ads / TikTok Ads).`);
 }
 
@@ -328,7 +385,7 @@ async function runIngestion(request: Request, body: IngestBody) {
   let query = supabaseAdmin
     .from("platform_connections")
     .select("*, clients!inner(id, agency_id, name)")
-    .in("platform", ["meta", "facebook_page", "instagram"]);
+    .in("platform", ["meta", "facebook_page", "instagram", "google_analytics"]);
 
   if (body.connectionId) {
     // A targeted retry (the per-connection "Sync Now" button) runs regardless
@@ -412,7 +469,7 @@ export async function GET(request: Request) {
   }
   return NextResponse.json({
     status: "active",
-    connectors: ["meta_graph_api"],
+    connectors: ["meta_graph_api", "google_analytics_data_api"],
     note: "POST with a Bearer token to trigger a sync; GET with a Bearer token is used by Vercel Cron.",
   });
 }
